@@ -2287,6 +2287,7 @@ dependencies = [
 [[package]]
 name = "mojuan-core"
 version = "0.2.0"
+source = "git+https://github.com/118coder/mojuan.git?branch=main#0fcf9afcc57b8e1caab368dccb57705103471b78"
 dependencies = [
  "comrak",
  "dirs",
