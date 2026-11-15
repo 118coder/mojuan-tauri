@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 云端构建产物（本地下载目录，不入库）
+release-exe/
