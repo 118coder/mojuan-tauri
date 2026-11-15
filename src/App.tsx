@@ -32,12 +32,15 @@ import { FindBar } from "./components/FindBar";
 import { VirtualReader } from "./components/VirtualReader";
 import type { VirtualReaderHandle } from "./components/VirtualReader";
 import { EditorPane } from "./components/EditorPane";
+import { buildExportMenuItems, EXPORT_ITEMS, runExport } from "./components/ExportMenu";
+import type { ExportMenuDeps } from "./components/ExportMenu";
 import { useAppStore, useFileTree, useNavHistory, useWorkspace } from "./lib/workspace";
 import type { NavEntry } from "./lib/workspace";
 import { useGlobalShortcuts } from "./lib/shortcuts";
 import { api, isTauri, mockListPaths, normalizePath } from "./lib/backend";
 import type { AppInfo, AppState, FileEntry } from "./lib/backend";
 import { loadDemoDoc } from "./lib/demo-doc";
+import type { ExportTabInfo } from "./lib/exporters";
 import {
   applyCurrentHit,
   getBlockHitCounts,
@@ -84,6 +87,8 @@ interface PromptState {
   initial?: string;
   okText?: string;
   onOk(value: string): void;
+  /** W6a：显式取消路径（取消按钮/Esc/点遮罩）回调；「确定」不触发 */
+  onCancel?: () => void;
 }
 
 function PromptDialog(props: { state: PromptState; onClose(): void }) {
@@ -98,14 +103,19 @@ function PromptDialog(props: { state: PromptState; onClose(): void }) {
     onClose();
     state.onOk(value.trim());
   };
+  /** 取消/Esc/点遮罩：先通知取消方（导出确认 Promise 落 false），再关浮层 */
+  const cancel = () => {
+    state.onCancel?.();
+    onClose();
+  };
 
   return (
     <div
       class="pal-mask"
-      onMouseDown={onClose}
+      onMouseDown={cancel}
       onKeyDown={(e: KeyboardEvent) => {
         e.stopPropagation();
-        if (e.key === "Escape") onClose();
+        if (e.key === "Escape") cancel();
       }}
     >
       <div class="prompt-dialog" onMouseDown={(e: MouseEvent) => e.stopPropagation()} data-testid="prompt-dialog">
@@ -127,7 +137,7 @@ function PromptDialog(props: { state: PromptState; onClose(): void }) {
           />
         )}
         <div class="dlg-actions right">
-          <button class="ghost" onClick={onClose}>
+          <button class="ghost" onClick={cancel}>
             取消
           </button>
           <button class="ghost primary" onClick={ok}>
@@ -985,6 +995,52 @@ function App() {
     [closeTabAndFlush, toast],
   );
 
+  /* ------------------------------ 导出（W6a） ------------------------------ */
+
+  /** 当前标签 → 导出源信息（无可导出文档返回 null） */
+  const getExportTab = useCallback((): ExportTabInfo | null => {
+    const tab = wsRef.current.activeTab;
+    if (!tab || tab.loading || tab.error) return null;
+    return {
+      // 虚拟文档（demo://）没有磁盘路径：HTML/PNG/PDF 可导，docx 由导出方报错提示
+      path: tab.virtual ? null : tab.path,
+      name: tab.name,
+      title: tab.name.replace(/\.(md|markdown|txt)$/i, ""),
+      content: tab.content,
+      blocks: tab.blocks,
+      isPlain: tab.isPlain,
+      theme: themeRef.current,
+    };
+  }, []);
+
+  /** 导出宿主能力：toast / 确认框（自绘对话框）/ 进度提示 / docx 前置保存 */
+  const exportDeps = useMemo<ExportMenuDeps>(
+    () => ({
+      toast,
+      confirm: (title: string, body: string) =>
+        new Promise<boolean>((resolve) => {
+          let settled = false;
+          const settle = (v: boolean) => {
+            if (settled) return;
+            settled = true;
+            resolve(v);
+          };
+          setPrompt({
+            kind: "confirm",
+            title,
+            body,
+            okText: "继续导出",
+            onOk: () => settle(true),
+            onCancel: () => settle(false),
+          });
+        }),
+      progress: (msg) => {
+        if (msg) toast(msg);
+      },
+      saveDoc: () => cmdSave(),
+    }),
+    [cmdSave, toast],
+  );
   /* ------------------------------ 右键菜单 ------------------------------ */
 
   const readerMenu = useCallback(
@@ -1026,9 +1082,12 @@ function App() {
           if (p && !p.startsWith("demo://")) void wsRef.current.reloadTab(p);
         },
       });
+      // W6a：导出分组（HTML / Word / PDF / 长图 PNG）
+      items.push({ separator: true });
+      items.push(...buildExportMenuItems(getExportTab, exportDeps));
       setCtxMenu({ x: e.clientX, y: e.clientY, items });
     },
-    [copyText, openFind],
+    [copyText, exportDeps, openFind],
   );
 
   const tabMenu = useCallback(
@@ -1141,6 +1200,11 @@ function App() {
       { id: "open-ws", title: "打开文件夹…", run: cmdOpenWorkspace },
       { id: "new", title: "新建文件…", shortcut: "Ctrl+N", run: cmdNewFile },
       { id: "save", title: "保存当前文档", shortcut: "Ctrl+S", run: () => void cmdSave() },
+      // W6a：导出四件套（定义与右键菜单共用 EXPORT_ITEMS，改文案一处生效）
+      { id: "export-html", title: EXPORT_ITEMS[0]!.paletteTitle, run: () => void runExport("html", getExportTab, exportDeps) },
+      { id: "export-docx", title: EXPORT_ITEMS[1]!.paletteTitle, run: () => void runExport("docx", getExportTab, exportDeps) },
+      { id: "export-pdf", title: EXPORT_ITEMS[2]!.paletteTitle, run: () => void runExport("pdf", getExportTab, exportDeps) },
+      { id: "export-png", title: EXPORT_ITEMS[3]!.paletteTitle, run: () => void runExport("png", getExportTab, exportDeps) },
       { id: "mode", title: "切换 阅读/分屏/编辑 模式", shortcut: "Ctrl+E", run: cycleMode },
       { id: "minimal", title: "切换极简模式", shortcut: "F8", run: toggleMinimal },
       { id: "fullscreen", title: "切换全屏", shortcut: "F11", run: toggleFullscreen },
@@ -1164,7 +1228,7 @@ function App() {
           if (p && !p.startsWith("demo://")) void wsRef.current.reloadTab(p);
         } },
     ],
-    [cmdNewFile, cmdOpenFile, cmdOpenWorkspace, cmdSave, cycleMode, openFind, openGoto, toggleFullscreen, toggleMinimal, toast],
+    [cmdNewFile, cmdOpenFile, cmdOpenWorkspace, cmdSave, cycleMode, exportDeps, getExportTab, openFind, openGoto, toggleFullscreen, toggleMinimal, toast],
   );
 
   /* ------------------------------ 渲染 ------------------------------ */
