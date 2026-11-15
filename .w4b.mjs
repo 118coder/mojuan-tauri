@@ -10,7 +10,7 @@ import puppeteer from 'puppeteer-core';
 
 const browser = await puppeteer.launch({
   executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-  headless: true, args: ['--no-sandbox'], defaultViewport: { width: 1380, height: 860 }, protocolTimeout: 15000,
+  headless: true, args: ['--no-sandbox'], defaultViewport: { width: 1380, height: 860 }, protocolTimeout: 60000,
 });
 const page = await browser.newPage();
 const errs = [];

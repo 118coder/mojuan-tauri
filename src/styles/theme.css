@@ -83,6 +83,13 @@ html, body, #root {
 /* 文本选区：主题蓝（阅读体验核心） */
 ::selection { background: var(--sel-bg); }
 
+/* 统一滚动容器契约（所有自绘滚动区都该带 .mj-scroll）：
+   滚到底不链给父级、滚动条槽位常驻、键盘可聚焦 */
+.mj-scroll {
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
 /* 滚动条：Win11 细样式 */
 ::-webkit-scrollbar { width: 12px; height: 12px; }
 ::-webkit-scrollbar-thumb {
@@ -282,6 +289,29 @@ button.ghost:hover { background: var(--hover); color: var(--text); }
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
 }
 
+/* 拖拽投放提示：整窗虚线框 + 居中说明（Tauri 拖拽进入时显示） */
+.drop-hint {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  pointer-events: none; /* 不能吃掉 drop 事件 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+}
+.drop-hint-box {
+  padding: 14px 22px;
+  border-radius: 8px;
+  background: var(--elev);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  color: var(--text);
+  font-size: 13.5px;
+}
+
 /* 通用过渡 */
 button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
 
@@ -345,8 +375,20 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
   border-bottom: 1px solid var(--border);
 }
 .tabstrip.minimal { border-top: 1px solid var(--border); }
-.tabstrip-tabs { display: flex; align-items: stretch; overflow: hidden; max-width: 70%; }
-.tabstrip-spacer { flex: 1; }
+/* 标签区：横向可滚（旧版 overflow:hidden + max-width:70%，标签一多右半边直接丢失） */
+.tabstrip-tabs {
+  display: flex;
+  align-items: stretch;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 96px);
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.tabstrip-tabs::-webkit-scrollbar { height: 0; display: none; }
+.tabstrip-spacer { flex: 1; min-width: 24px; }
 .tabstrip-actions { display: flex; align-items: center; padding: 0 6px; gap: 4px; flex-shrink: 0; }
 .tabstrip-btn {
   border: none; background: transparent; color: var(--text-dim);
@@ -421,11 +463,12 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
 }
 .sidebar-resizer {
   position: absolute;
-  top: 0; right: 0;
-  width: 5px;
+  top: 0; right: -2px;
+  width: 7px;
   height: 100%;
   cursor: ew-resize;
   z-index: 10;
+  touch-action: none;
 }
 .sidebar-resizer:hover { background: var(--accent-soft); }
 
@@ -444,7 +487,6 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
   letter-spacing: 0.4px;
   flex-shrink: 0;
 }
-.side-head-hint { color: var(--text-faint); font-size: 10.5px; }
 .side-head-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .side-head-btns { display: flex; gap: 2px; }
 .side-btn {
@@ -455,19 +497,38 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
 .side-btn:hover { background: var(--hover); color: var(--text); }
 .side-empty { padding: 10px 12px; color: var(--text-faint); font-size: 12px; }
 .side-error { color: var(--danger); font-size: 11.5px; }
-.side-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 60px; }
+.side-list { flex: 1; overflow-y: auto; overflow-x: hidden; min-height: 60px; overscroll-behavior: contain; scrollbar-gutter: stable; }
+/* 焦点可见性：键盘导航时给列表一个内描边（鼠标点击不显示） */
+.side-list:focus { outline: none; }
+.side-list:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.tree-row.selected { background: var(--sel-bg); color: var(--text); }
+.tree-row.selected::after {
+  content: "";
+  position: absolute; inset: 0;
+  border-left: 2px solid var(--accent);
+  pointer-events: none;
+}
+.tree-row { position: relative; }
 
-/* 大纲 */
+/* 大纲：真实虚拟列表（W8）
+ * spacer 撑满总高度，行绝对定位；固定行高是 scrollTop 归浏览器管的前提。
+ * 行内文案只允许单行省略，绝不允许换行把行高撑变，否则可视区间会算错。 */
+.outline-canvas { position: relative; width: 100%; }
 .outline-item {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 26px;
+  line-height: 26px;
+  box-sizing: border-box;
   display: block;
-  width: 100%;
   text-align: left;
   border: none;
   background: transparent;
   color: var(--text-dim);
   font-size: 12.5px;
   font-family: var(--font-ui);
-  padding: 4px 10px 4px 10px;
+  padding: 0 10px;
   cursor: default;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -480,6 +541,28 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
   background: var(--accent-soft);
   border-left-color: var(--accent);
 }
+/* 当前章节位置刻度：纯视觉，不占滚动区、不产生任何滚动副作用 */
+.outline-progress {
+  position: relative;
+  height: 3px;
+  margin: 0 10px 5px;
+  background: var(--border);
+  border-radius: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.outline-progress > span {
+  position: absolute;
+  top: -2px;
+  width: 3px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent);
+  transform: translateX(-50%);
+  transition: left 0.12s linear;
+}
+.outline-progress:hover { background: var(--accent-soft); }
+.side-btn.on { background: var(--accent-soft); color: var(--text); }
 
 /* 文件树 */
 .tree-row {
@@ -618,16 +701,29 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
 /* 查找条样式见上方 W4a 的 .mj-findbar 段落 */
 
 /* ------------------------------ 命令面板 / 对话框遮罩 ------------------------------ */
+/*
+ * 遮罩只负责「铺满 + 居中」。W8 起滚轮语义由 lib/interaction.ts 统一裁决：
+ *   - Modal 打开时把面板注册为顶层所有者；滚轮落在面板内一律放行，
+ *     落在面板外（遮罩空白）由仲裁器 preventDefault，绝不穿透背景阅读区；
+ *   - 弹层内部的滚动容器自己 overscroll-behavior: contain，滚到底不外溢；
+ *   - 绝不再用 wheel 关闭弹层，组件上也不再挂任何 onWheel / window 监听。
+ * W7 的 stopWheel(mask, allow) 已删除：它要求把每个内部可滚容器列进 allow，
+ * 漏配一个就把列表一起锁死，是「列表滚一格就消失」的最后一处隐患。
+ */
 .pal-mask {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.35);
   z-index: 1500;
   display: flex;
-  align-items: flex-start;
   justify-content: center;
-  padding-top: 12vh;
+  align-items: center;
+  padding: 24px;
+  overscroll-behavior: contain;
 }
+/* 命令面板贴上方 12vh（与 VS Code / Win11 搜索一致），设置与输入框居中 */
+.pal-mask.mask-top { align-items: flex-start; padding-top: 12vh; }
+.pal-mask.mask-center { align-items: center; }
 .palette {
   width: 560px;
   max-width: calc(100vw - 40px);
@@ -650,7 +746,12 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
   border-bottom: 1px solid var(--border);
 }
 .pal-input::placeholder { color: var(--text-faint); }
-.pal-list { max-height: 46vh; overflow-y: auto; padding: 6px; }
+.pal-list {
+  max-height: 46vh;
+  overflow-y: auto;
+  overscroll-behavior: contain; /* 滚到底不把事件链给背后阅读区 */
+  padding: 6px;
+}
 .pal-row {
   display: flex;
   align-items: center;
@@ -675,6 +776,8 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
 .settings-dialog, .prompt-dialog {
   width: 520px;
   max-width: calc(100vw - 40px);
+  /* 小窗口（minHeight 620）下内容会超出视口：限高 + .dlg-body 内部滚动 */
+  max-height: calc(100vh - 48px);
   background: var(--elev);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -694,7 +797,14 @@ button, .menu-item { transition: background 0.08s ease, color 0.08s ease; }
   border-bottom: 1px solid var(--border);
   user-select: none;
 }
-.dlg-body { padding: 8px 16px 14px; overflow-y: auto; }
+.dlg-body {
+  padding: 8px 16px 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* 弹性收缩：对话框到达 max-height 时只有内容区滚 */
+  min-height: 0;
+  flex: 1 1 auto;
+}
 .dlg-row {
   display: flex;
   align-items: center;

@@ -1,3 +1,19 @@
+# ===========================================================================
+# 构建目标：Windows x64 / MSVC
+# ---------------------------------------------------------------------------
+# 主构建通道是**云端** GitHub Actions（windows-latest），那里的 MSVC 环境
+# 完整、路径纯 ASCII，本文件就是给它用的。
+#
+# 为什么本地不直接编（2026-11-16 实测）：
+#   - 本机 VS 2022 的 C++ include 目录是空的（0 个头文件），任何要编译
+#     C/C++ 的 crate（vswhom-sys 等）都会报 "无法打开包括文件: stdarg.h"；
+#   - 项目路径含中文，rustc/cl.exe 在这种路径下会崩（0xc0000005）或 exit 2。
+#     用 junction 也绕不开：cargo 会把路径 canonicalize 回真实中文路径，
+#     再交给 ld.exe，于是报 "cannot find ...\墨卷\...\libsyn-xxx.rlib"。
+#   本地要出 exe 请走 CI：push 后在 Actions 手动 Run workflow，下载 artifact。
+#
+# crt-static：静态链接 CRT，产物不依赖 VC++ 运行库分发。
+# ===========================================================================
 [build]
 target = "x86_64-pc-windows-msvc"
 

@@ -1,10 +1,20 @@
 /**
  * 标签条（W4b 任务书第 2 条）
  * ---------------------------------------------------------------------------
- * - 多开/点切/中键关/右键菜单（菜单内容由 App 统一构建，见 ContextMenuStub）。
+ * - 多开/点切/中键关/右键菜单（菜单内容由 App 统一构建，见 App.tsx 的 tabMenu）。
  * - 长标题截断（CSS ellipsis），脏标记圆点。
  * - 空白区域作为拖拽区（data-tauri-drag-region），极简模式下承担窗口拖动。
+ *
+ * W7 改动：
+ *  - 标签区改成可横向滚动（原来 `overflow: hidden` + `max-width: 70%`，
+ *    开够多标签后右边的标签既看不到也点不到，等于丢了文件）；
+ *  - 切换标签后自动把当前标签滚进可视区，避免"点了快捷键切过去却看不见"。
+ * W8 改动：横向滚轮策略改由中央仲裁器统一处理（声明 data-wheel="horizontal"），
+ *  组件不再自己挂元素级 wheel 监听 —— 全应用只剩一条输入链路。
  */
+
+import { useEffect, useRef } from "preact/hooks";
+import { claimScroll } from "../lib/interaction";
 
 interface TabLike {
   path: string;
@@ -27,10 +37,28 @@ export interface TabStripProps {
 
 export function TabStrip(props: TabStripProps) {
   const { tabs, activePath, minimal, onActivate, onClose, onTabContextMenu, onOpenSettings, onExitMinimal } = props;
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  // 当前标签必须可见（键盘 Ctrl+Tab 切过去的标签不能藏在滚动区外）。
+  // scrollIntoView 的落点由浏览器算，事后 claimScroll 按 x 轴补申报，
+  // 免得「切标签」被仲裁器当成用户横向滚动。
+  useEffect(() => {
+    const listEl = listRef.current;
+    const before = listEl?.scrollLeft ?? 0;
+    const el = listEl?.querySelector<HTMLElement>(".tab.active");
+    el?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (listEl) claimScroll(listEl, before, "jump", "x");
+  }, [activePath, tabs.length]);
 
   return (
     <div class={"tabstrip" + (minimal ? " minimal" : "")}>
-      <div class="tabstrip-tabs" data-tauri-drag-region>
+      <div
+        class="tabstrip-tabs"
+        ref={listRef}
+        data-tauri-drag-region
+        data-scroll-kind="tabstrip"
+        data-wheel="horizontal"
+      >
         {tabs.map((t) => {
           const active = t.path === activePath;
           return (

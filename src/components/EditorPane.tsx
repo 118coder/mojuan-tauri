@@ -12,6 +12,7 @@
  *    EditorView 的 dark 标记只影响 CodeMirror 基础主题（光标、面板底色等）。
  */
 import { useLayoutEffect, useRef } from "preact/hooks";
+import { peekOrigin, programmaticScroll } from "../lib/interaction";
 import {
   Compartment,
   EditorState,
@@ -95,7 +96,8 @@ function buildThemeSpec(): ThemeSpec {
       height: "100%",
       flexGrow: "1",
       minHeight: "0",
-      fontSize: "14px",
+      // 字号走 CSS 变量：Ctrl+滚轮 / Ctrl+0 缩放对编辑区同样生效
+      fontSize: "var(--editor-font-size, 14px)",
       color: "var(--text)",
       backgroundColor: "var(--code-bg)",
     },
@@ -104,6 +106,8 @@ function buildThemeSpec(): ThemeSpec {
       fontFamily: "var(--font-mono)",
       lineHeight: "1.6",
       overflow: "auto",
+      // 编辑区滚到底不再把滚轮链到外层（分屏时避免带着阅读区一起动）
+      overscrollBehavior: "contain",
     },
     "&.cm-editor.mj-editor .cm-content": {
       // 底部留白，最后一行不会贴住窗口边
@@ -280,13 +284,17 @@ const zhPhrases: { [key: string]: string } = {
 };
 
 /* ------------------------------------------------------------------ */
-/* 滚动同步状态：pending 表示刚由外部驱动落地，需吞掉回声事件 */
+/* 滚动同步状态                                                        */
 /* ------------------------------------------------------------------ */
+/*
+ * W8：删掉 W7 的 `pending + pendingTimer(300ms)` 回声守卫。
+ * 那套是靠时间窗猜「这次 scroll 是不是我刚写进去的」，和仲裁器的
+ * token/预期值溯源重复，而且时间窗本身就会漏（连续滚轮、同一帧多次写入）。
+ * 现在统一问仲裁器：programmatic（sync/jump/restore）→ 不回传；否则是用户滚动。
+ */
 
 interface ScrollSyncState {
   lastEmitted: number;
-  pending: number | null;
-  pendingTimer: number;
   raf: number;
   /** rAF 兜底定时器：窗口最小化/后台时 rAF 可能长期不触发 */
   fallbackTimer: number;
@@ -295,8 +303,6 @@ interface ScrollSyncState {
 function createScrollSyncState(): ScrollSyncState {
   return {
     lastEmitted: 0,
-    pending: null,
-    pendingTimer: 0,
     raf: 0,
     fallbackTimer: 0,
   };
@@ -307,11 +313,11 @@ function readOnlyExtension(ro: boolean): Extension {
   return [EditorState.readOnly.of(ro), EditorView.editable.of(!ro)];
 }
 
-/** 外部比例落到滚动容器；成功滚动后标记 pending，供 scroll 监听吞回声 */
+/** 外部比例落到滚动容器（统一申报，回声由仲裁器按预期值精确认领） */
 function applyExternalRatio(
   view: EditorView,
   ratio: number,
-  sync: ScrollSyncState,
+  _sync: ScrollSyncState,
 ): void {
   const el = view.scrollDOM;
   const max = el.scrollHeight - el.clientHeight;
@@ -319,13 +325,9 @@ function applyExternalRatio(
   const next = Math.max(0, Math.min(1, ratio));
   const top = next * max;
   if (Math.abs(el.scrollTop - top) < 1) return; // 已在目标位置，避免无谓事件
-  sync.pending = next;
-  if (sync.pendingTimer) window.clearTimeout(sync.pendingTimer);
-  sync.pendingTimer = window.setTimeout(() => {
-    sync.pending = null;
-    sync.pendingTimer = 0;
-  }, 300);
-  el.scrollTop = top;
+  // W8：程序化写入统一申报，仲裁器把随后的 scroll 精确识别为 "sync"；
+  // 不再需要 W7 的 pending + 300ms 时间窗。
+  programmaticScroll(el, top, "sync");
 }
 
 /* ------------------------------------------------------------------ */
@@ -451,25 +453,20 @@ export function EditorPane(props: EditorPaneProps) {
 
     const view = new EditorView({ state, parent: host });
     viewRef.current = view;
+    // 声明滚动域：仲裁器据此记录手势归属（编辑器内的滚轮/键盘滚的是它）
+    view.scrollDOM.setAttribute("data-scroll-kind", "editor");
     currentThemeRef.current = props.theme;
     currentReadOnlyRef.current = !!props.readOnly;
 
-    /* 滚动上报：rAF 节流 + 回声吞掉 */
+    /* 滚动上报：rAF 节流 + 仲裁器溯源（程序化滚动不回传） */
     const emitScroll = () => {
       const el = view.scrollDOM;
       const max = el.scrollHeight - el.clientHeight;
       const ratio = max > 0 ? Math.max(0, Math.min(1, el.scrollTop / max)) : 0;
-      if (sync.pending !== null) {
-        const isEcho = Math.abs(ratio - sync.pending) <= 0.002;
-        sync.pending = null;
-        if (sync.pendingTimer) {
-          window.clearTimeout(sync.pendingTimer);
-          sync.pendingTimer = 0;
-        }
-        if (isEcho) {
-          sync.lastEmitted = ratio;
-          return; // 外部驱动产生的滚动，不再回传
-        }
+      // 全局捕获监听已用「写入后读回的预期值」认领过这次 scroll，这里只读结果。
+      if (peekOrigin(el).programmatic) {
+        sync.lastEmitted = ratio;
+        return; // 外部驱动（分屏同步/恢复进度）产生的滚动，不再回传
       }
       if (Math.abs(ratio - sync.lastEmitted) < 0.0004) return;
       sync.lastEmitted = ratio;
@@ -525,11 +522,8 @@ export function EditorPane(props: EditorPaneProps) {
       if (compositionEndTimer) window.clearTimeout(compositionEndTimer);
       if (sync.raf) window.cancelAnimationFrame(sync.raf);
       if (sync.fallbackTimer) window.clearTimeout(sync.fallbackTimer);
-      if (sync.pendingTimer) window.clearTimeout(sync.pendingTimer);
       sync.raf = 0;
       sync.fallbackTimer = 0;
-      sync.pending = null;
-      sync.pendingTimer = 0;
       view.destroy();
       viewRef.current = null;
     };

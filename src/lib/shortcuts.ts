@@ -3,9 +3,10 @@
  * ---------------------------------------------------------------------------
  * - window keydown 统一分发；已被组件处理过的事件（defaultPrevented，如
  *   CodeMirror 内部 Ctrl+S/F）不再重复处理。
- * - 焦点在输入框时跳过与输入冲突的组合（缩放类），避免编辑器里打字触发。
- * - Ctrl+滚轮缩放单独挂 wheel 监听（必须 passive:false 才能 preventDefault，
- *   否则 WebView 会缩放整页）。
+ * - 焦点在输入框/编辑器时跳过与输入冲突的组合（Ctrl+F 让给 CodeMirror 内置
+ *   查找面板，否则编辑区里 Ctrl+F 会被全局抢走、什么都不发生）。
+ * - 滚轮缩放已迁到 lib/interaction.ts 的 useWheelZoom（全局 wheel 由仲裁器
+ *   在捕获阶段统一分发），本文件只处理键盘，避免同一事件被两处争抢。
  */
 
 import { useEffect, useRef } from "preact/hooks";
@@ -19,6 +20,8 @@ export interface ShortcutHandlers {
   onSave(): void;
   /** Ctrl+W 关闭当前标签 */
   onCloseTab(): void;
+  /** Ctrl+Shift+T 重新打开刚关闭的标签 */
+  onReopenTab(): void;
   /** Ctrl+Tab / Ctrl+Shift+Tab 切换标签 */
   onCycleTab(dir: 1 | -1): void;
   /** Ctrl+E 阅读分屏编辑循环切换 */
@@ -92,6 +95,13 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
             e.preventDefault();
             h.current.onCloseTab();
             return;
+          case "t":
+            // Ctrl+Shift+T：重开最近关闭的标签（浏览器/Win11 通用）
+            if (e.shiftKey) {
+              e.preventDefault();
+              h.current.onReopenTab();
+            }
+            return;
           case "Tab":
             e.preventDefault();
             h.current.onCycleTab(e.shiftKey ? -1 : 1);
@@ -109,7 +119,10 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
             h.current.onPalette();
             return;
           case "f":
-            // 编辑器内 Ctrl+F 由 CodeMirror 自带查找面板处理（不会走到这里）
+            // 焦点在编辑器/输入框里：让给 CodeMirror 自带的查找面板。
+            // 旧实现无条件 preventDefault 再调 onFind，而 onFind 在非阅读模式下
+            // 直接 return —— 结果就是「编辑区按 Ctrl+F 毫无反应」。
+            if (editable) return;
             e.preventDefault();
             h.current.onFind();
             return;
@@ -134,8 +147,8 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
             e.preventDefault();
             h.current.onToggleSidebar();
             return;
-          case "L":
-            // Ctrl+Shift+L：切换侧栏（调研 ⚠️ 项的侧栏方案）
+          case "l":
+            // Ctrl+Shift+L：切换侧栏（旧代码写成 "L"，但 key 已被 lower 化，永远命中不了）
             if (e.shiftKey) {
               e.preventDefault();
               h.current.onToggleSidebar();
@@ -183,19 +196,9 @@ export function useGlobalShortcuts(handlers: ShortcutHandlers): void {
       }
     };
 
-    /** Ctrl+滚轮缩放（passive:false 才能 preventDefault 页面缩放） */
-    const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey) return;
-      if (isEditableTarget(e.target)) return;
-      e.preventDefault();
-      h.current.onZoom(e.deltaY < 0 ? 1 : -1);
-    };
-
     window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("wheel", onWheel, { passive: false });
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("wheel", onWheel);
     };
   }, []);
 }

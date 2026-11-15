@@ -7,7 +7,7 @@
  *  1) 自主模式（推荐，缺省）：组件自己全局监听 contextmenu 并按上下文构建菜单。
  *     <ContextMenu onFind={(q) => openFind(q)} getFilePath={() => currentPath} />
  *
- *  2) 受控模式（兼容 W4b ContextMenuStub 契约）：App 自己监听并构建 items 传入。
+ *  2) 受控模式：App 自己监听 contextmenu 并构建 items 传入。
  *     <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />
  *     传了 menu prop（即使为 null）即进入受控模式，组件不再自主监听。
  *     CtxMenuItem / CtxMenuState 类型与本文件同名导出，Stub 的 import 可直接换路径。
@@ -44,12 +44,13 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Block } from "../lib/renderer";
 import { getRenderedBlocks } from "../lib/renderer";
+import { claimScroll, onUserScroll, onUserWheel } from "../lib/interaction";
 
 /* -------------------------------------------------------------------------- */
 /* 对外类型                                                                    */
 /* -------------------------------------------------------------------------- */
 
-/** 受控模式菜单项（兼容 W4b ContextMenuStub 的 CtxMenuItem） */
+/** 受控模式菜单项（W4b 起由 App 构建传入） */
 export interface CtxMenuItem {
   label?: string;
   shortcut?: string;
@@ -59,7 +60,7 @@ export interface CtxMenuItem {
   separator?: true;
 }
 
-/** 受控模式菜单状态（兼容 W4b ContextMenuStub 的 CtxMenuState） */
+/** 受控模式菜单状态（W4b 起由 App 构建传入） */
 export interface CtxMenuState {
   x: number;
   y: number;
@@ -84,6 +85,8 @@ export interface ContextMenuProps {
   onRevealFile?: (path: string) => void;
   /** 覆盖「打开链接」；缺省 invoke("open_url")（Tauri）→ window.open（浏览器） */
   onOpenLink?: (url: string) => void;
+  /** 页内锚点（href="#xxx"）跳转：按标题文本定位块（虚拟列表下只能用块号跳） */
+  onJumpAnchor?: (slug: string) => void;
   /** 「复制为 Markdown」的块源；缺省用 renderer 最近一次渲染结果 */
   blocks?: Block[];
 }
@@ -319,13 +322,33 @@ export function ContextMenu(props: ContextMenuProps) {
     sel.selectAllChildren(scope);
   };
 
-  /** 打开链接：页内锚点就地滚动；外链 Tauri open_url（默认外部浏览器）→ window.open 兜底 */
+  /**
+   * 打开链接：页内锚点 → 按标题文本定位块（虚拟列表下 getElementById 靠不住）；
+   * 外链 → Tauri open_url（默认外部浏览器）→ window.open 兜底。
+   *
+   * 页内锚点为什么不能直接 scrollIntoView：
+   *   1) 渲染器从不给标题生成 id，getElementById 永远拿不到，点击等于没反应；
+   *   2) 阅读器是虚拟列表，未渲染的块根本不在 DOM 里。
+   * 所以交给 App 的 onJumpAnchor 按 heading 文本找块号再 scrollToBlock。
+   */
   const openLink = async (a: HTMLAnchorElement): Promise<void> => {
     const href = a.getAttribute("href") ?? "";
     if (!href) return;
     if (href.startsWith("#")) {
-      const el = document.getElementById(decodeURIComponent(href.slice(1)));
-      el?.scrollIntoView({ block: "start" });
+      const raw = decodeURIComponent(href.slice(1));
+      const jumpAnchor = propsRef.current.onJumpAnchor;
+      if (jumpAnchor) {
+        jumpAnchor(raw);
+        return;
+      }
+      // 没配回调时的兜底：至少把已经渲染出来的元素滚进视野，并补申报
+      // （否则这次滚动会被判成「用户滚动」，误触发分屏联动）。
+      const target = document.getElementById(raw);
+      if (!target) return;
+      const scroller = target.closest<HTMLElement>('[data-scroll-kind="reader"]');
+      const before = scroller?.scrollTop ?? 0;
+      target.scrollIntoView({ block: "start" });
+      if (scroller) claimScroll(scroller, before, "jump");
       return;
     }
     const abs = a.href || href;
@@ -474,14 +497,6 @@ export function ContextMenu(props: ContextMenuProps) {
       }
     };
 
-    const onWheel = (): void => {
-      if (menuOpenRef.current) closeMenu();
-    };
-
-    const onScroll = (): void => {
-      if (menuOpenRef.current) closeMenu();
-    };
-
     /** 自主模式：全局接管 contextmenu */
     const onContextMenu = (e: MouseEvent): void => {
       if (controlledRef.current) return; // 受控模式：菜单由外部驱动，不自主接管
@@ -524,18 +539,45 @@ export function ContextMenu(props: ContextMenuProps) {
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("contextmenu", onContextMenu);
     window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("wheel", onWheel, { capture: true, passive: true });
-    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       document.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("wheel", onWheel, { capture: true } as EventListenerOptions);
-      document.removeEventListener("scroll", onScroll, true);
     };
     // 监听只挂一次；回调经由 ref 读取最新 props/状态（受控/自主模式切换也由 ref 感知）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /* ---------------------------------------------------------------------- */
+  /* 菜单打开期间的「滚动即关闭」（W8：只认真实用户滚动）                       */
+  /* ---------------------------------------------------------------------- */
+  /*
+   * W7 把 window wheel + document scroll 捕获监听挂在这里。问题是 document
+   * 捕获监听收得到**所有** scroll，包括程序化滚动：预览一滚，大纲的跟随
+   * 滚动、阅读器的高度补偿滚动都会把菜单关掉 —— 用户看到的就是「滚轮和
+   * 别的控件打架」。现在改为订阅仲裁器，只有 classifyScroll 判定为 user
+   * （没有程序化登记、或登记值对不上）的滚动才会关菜单。
+   */
+  const menuVisible = !!effMenu;
+  useEffect(() => {
+    if (!menuVisible) return;
+    const offScroll = onUserScroll((o) => {
+      if (!menuOpenRef.current) return;
+      if (menuRef.current?.contains(o.el)) return; // 菜单内部滚动不动它
+      closeMenu();
+    });
+    const offWheel = onUserWheel((_e, host) => {
+      if (!menuOpenRef.current) return;
+      if (host && menuRef.current?.contains(host)) return;
+      closeMenu();
+    });
+    return () => {
+      offScroll();
+      offWheel();
+    };
+    // 监听只随菜单开合挂卸；closeMenu 内部走 ref 读最新状态
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuVisible]);
 
   /* ------------------------------ 出屏钳位（边缘翻转） ------------------------------ */
 
@@ -568,6 +610,7 @@ export function ContextMenu(props: ContextMenuProps) {
         <div
           class="ctx-menu"
           data-testid="ctx-menu"
+          data-scroll-kind="menu"
           ref={menuRef}
           style={{ left: `${pos?.x ?? effMenu.x}px`, top: `${pos?.y ?? effMenu.y}px` }}
           onContextMenu={(e) => e.preventDefault()}
@@ -592,7 +635,7 @@ export function ContextMenu(props: ContextMenuProps) {
         </div>
       )}
       {lightbox && (
-        <div class="mj-lightbox" onClick={() => setLightbox(null)}>
+        <div class="mj-lightbox" data-scroll-kind="modal" data-wheel="swallow" onClick={() => setLightbox(null)}>
           <img src={lightbox} alt="图片预览" />
         </div>
       )}

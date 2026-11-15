@@ -73,11 +73,29 @@ export function useAppStore(): AppStore {
 
   const saveTimer = useRef<number | null>(null);
   const scrollTimer = useRef<number | null>(null);
+  /**
+   * 尚未落盘的阅读进度（path → scrollTop）。
+   *
+   * 为什么单独存一份：下面的 `stateRef.current = state` 会在**每次渲染**把 ref
+   * 覆盖成已提交的 state，而滚动进度是按帧写入的高频数据，绝不能每帧 setState
+   * （会把整棵树重渲）。旧实现直接写 stateRef 且不 setState，结果下一次渲染
+   * （percent 更新必然引发）就把刚写的进度冲掉 —— 表现为「阅读进度从来不保存，
+   * 刷新后永远回到顶部」。现在进度先入 pending，落盘时合并，两者互不打架。
+   */
+  const pendingScroll = useRef<Record<string, number>>({});
 
   const doSave = useCallback(() => {
     if (saveTimer.current != null) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
+    }
+    const pend = pendingScroll.current;
+    if (Object.keys(pend).length > 0) {
+      stateRef.current = {
+        ...stateRef.current,
+        scroll_top: { ...stateRef.current.scroll_top, ...pend },
+      };
+      pendingScroll.current = {};
     }
     void api.saveState({ ...stateRef.current });
   }, []);
@@ -108,15 +126,15 @@ export function useAppStore(): AppStore {
 
   const noteScroll = useCallback(
     (path: string, top: number) => {
-      const cur = stateRef.current;
-      const prev = cur.scroll_top[path];
+      const prev = pendingScroll.current[path] ?? stateRef.current.scroll_top[path];
       if (prev !== undefined && Math.abs(prev - top) < 1) return;
-      stateRef.current = { ...cur, scroll_top: { ...cur.scroll_top, [path]: top } };
-      // 3s 节流落盘；尾部定时器保证最后一次也写入
+      pendingScroll.current[path] = top;
+      // 3s 节流落盘；尾部定时器保证最后一次也写入（即便期间有别的 patch 在排队，
+      // 也必须补一次，否则这次进度就永久丢了）
       if (scrollTimer.current == null) {
         scrollTimer.current = window.setTimeout(() => {
           scrollTimer.current = null;
-          if (saveTimer.current == null) doSave();
+          doSave();
         }, 3000);
       }
     },

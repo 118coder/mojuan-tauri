@@ -1,11 +1,20 @@
 # 墨卷 Tauri 版 · Windows 构建与打包（云端，本地不占磁盘）
-# 触发：手动 workflow_dispatch / 推 v* 标签
-# 产物：NSIS 安装包 + 绿色单 exe（artifact）
+# 触发：推 main（每次改动自动出包）/ 手动 workflow_dispatch / 推 v* 标签
+# 产物：NSIS 安装包 + 绿色单 exe（artifact，保留 14 天）
+#
+# 为什么编译放云端：本机 VS 2022 的 C++ include 目录是空的，且项目路径含中文
+# （rustc/cl.exe 在非 ASCII 路径下会崩）。云端 windows-latest 环境完整、路径纯 ASCII。
 name: build-windows
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
+
+# 同一分支连续推送时取消旧任务，避免排队堆积
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -28,13 +37,20 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Tauri 构建（NSIS 安装包）
+      - name: Tauri 构建（绿色 exe + NSIS 安装包）
         run: npm run tauri build -- --bundles nsis
+
+      - name: 列出产物（排错用）
+        if: always()
+        run: |
+          Get-ChildItem -Recurse -Include *.exe src-tauri/target/x86_64-pc-windows-msvc/release |
+            Select-Object FullName, Length | Format-Table -AutoSize
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: mojuan-windows-${{ github.sha }}
+          retention-days: 14
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
             src-tauri/target/x86_64-pc-windows-msvc/release/mojuan-tauri.exe

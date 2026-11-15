@@ -8,8 +8,8 @@
  *
  * 依赖的 W3 产物（只读）：renderer.ts / VirtualReader.tsx；
  * 依赖的 W2 产物（只读）：src-tauri 命令层（经 lib/backend.ts 门面）。
- * ContextMenu / FindBar 由 W4a 实现，合入前用 ContextMenuStub / FindBarStub 占位，
- * 接口约定写在各 stub 文件头部注释里。
+ * ContextMenu / FindBar 由 W4a 实现，二者均已正式合入（W8 已删除过时的
+ * ContextMenuStub 占位文件）；受控模式的菜单项由本文件统一构建。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "preact/hooks";
@@ -23,9 +23,8 @@ import { StatusBar } from "./components/StatusBar";
 import { Palette } from "./components/Palette";
 import type { PaletteCommand } from "./components/Palette";
 import { SettingsDialog } from "./components/SettingsDialog";
-// 右键菜单：W4a 的 ContextMenu.tsx 受控模式当前有无限渲染循环（见
-// ContextMenuStub.tsx 头注释的修复方案），修复合入前用 stub 占位；
-// FindBar 已是 W4a 正式组件（查找管线走渲染器 mark 注入）。
+// 右键菜单：ContextMenu 的受控模式（App 构建 items）+ 自主模式（链接/图片）双通道；
+// FindBar 同为 W4a 正式组件（查找管线走渲染器 mark 注入）。
 import { ContextMenu } from "./components/ContextMenu";
 import type { CtxMenuItem, CtxMenuState } from "./components/ContextMenu";
 import { FindBar } from "./components/FindBar";
@@ -37,6 +36,8 @@ import type { ExportMenuDeps } from "./components/ExportMenu";
 import { useAppStore, useFileTree, useNavHistory, useWorkspace } from "./lib/workspace";
 import type { NavEntry } from "./lib/workspace";
 import { useGlobalShortcuts } from "./lib/shortcuts";
+import { focusScroller, useWheelZoom } from "./lib/interaction";
+import { Modal } from "./components/Modal";
 import { api, isTauri, mockListPaths, normalizePath } from "./lib/backend";
 import type { AppInfo, AppState, FileEntry } from "./lib/backend";
 import { loadDemoDoc } from "./lib/demo-doc";
@@ -66,12 +67,20 @@ function ReaderView(props: {
   jump: number | null;
   onProgress(path: string, p: ScrollProgress): void;
   apiRef: { current: VirtualReaderHandle | null };
+  onLinkClick(href: string): void;
 }) {
-  const { path, blocks, jump, onProgress, apiRef } = props;
+  const { path, blocks, jump, onProgress, apiRef, onLinkClick } = props;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const cb = useMemo(() => (p: ScrollProgress) => onProgress(path, p), [path, onProgress]);
   return (
-    <VirtualReader blocks={blocks} scrollTopByProp={jump} onScrollProgress={cb} apiRef={apiRef} emptyText="文档为空" />
+    <VirtualReader
+      blocks={blocks}
+      scrollTopByProp={jump}
+      onScrollProgress={cb}
+      apiRef={apiRef}
+      emptyText="文档为空"
+      onLinkClick={onLinkClick}
+    />
   );
 }
 
@@ -110,42 +119,42 @@ function PromptDialog(props: { state: PromptState; onClose(): void }) {
   };
 
   return (
-    <div
-      class="pal-mask"
-      onMouseDown={cancel}
-      onKeyDown={(e: KeyboardEvent) => {
-        e.stopPropagation();
-        if (e.key === "Escape") cancel();
-      }}
+    <Modal
+      open
+      panelClass="prompt-dialog"
+      maskClass="mask-center"
+      label={state.title}
+      initialFocus={state.kind === "input" ? ".prompt-input" : undefined}
+      testId="prompt-dialog"
+      onClose={cancel}
     >
-      <div class="prompt-dialog" onMouseDown={(e: MouseEvent) => e.stopPropagation()} data-testid="prompt-dialog">
-        <div class="dlg-head">
-          <span>{state.title}</span>
-        </div>
-        {state.body && <div class="prompt-body">{state.body}</div>}
-        {state.kind === "input" && (
-          <input
-            ref={inputRef}
-            class="prompt-input"
-            type="text"
-            placeholder={state.placeholder}
-            value={value}
-            onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value)}
-            onKeyDown={(e: KeyboardEvent) => {
-              if (e.key === "Enter") ok();
-            }}
-          />
-        )}
-        <div class="dlg-actions right">
-          <button class="ghost" onClick={cancel}>
-            取消
-          </button>
-          <button class="ghost primary" onClick={ok}>
-            {state.okText ?? "确定"}
-          </button>
-        </div>
+      <div class="dlg-head">
+        <span>{state.title}</span>
       </div>
-    </div>
+      {state.body && <div class="prompt-body">{state.body}</div>}
+      {state.kind === "input" && (
+        <input
+          ref={inputRef}
+          class="prompt-input"
+          type="text"
+          placeholder={state.placeholder}
+          value={value}
+          onInput={(e) => setValue((e.currentTarget as HTMLInputElement).value)}
+          onKeyDown={(e: KeyboardEvent) => {
+            e.stopPropagation();
+            if (e.key === "Enter") ok();
+          }}
+        />
+      )}
+      <div class="dlg-actions right">
+        <button class="ghost" onClick={cancel}>
+          取消
+        </button>
+        <button class="ghost primary" onClick={ok}>
+          {state.okText ?? "确定"}
+        </button>
+      </div>
+    </Modal>
   );
 }
 
@@ -185,6 +194,8 @@ function App() {
   const progressRef = useRef<ScrollProgress | null>(null);
   /** 每个标签的最新 scrollTop（切标签恢复用） */
   const progressByPathRef = useRef<Map<string, number>>(new Map());
+  /** 最近关闭的标签（Ctrl+Shift+T 重开） */
+  const closedTabsRef = useRef<string[]>([]);
   /** 待恢复的滚动位置 {path, top}：首次 progress 上报时落地 */
   const pendingScrollRef = useRef<{ path: string; top: number } | null>(null);
   /**
@@ -198,8 +209,6 @@ function App() {
   }, []);
   /** 待定位的行（工作区搜索点击打开后） */
   const pendingLineRef = useRef<{ path: string; line: number } | null>(null);
-  /** 编辑器 → 阅读器联动锁（防回环） */
-  const syncLockRef = useRef(0);
   const editorRatioRef = useRef<number | undefined>(undefined);
   /** 编辑后的标签（分屏防抖重渲染用） */
   const editedPathRef = useRef<string | null>(null);
@@ -237,6 +246,8 @@ function App() {
   const [prompt, setPrompt] = useState<PromptState | null>(null);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  /** 有文件被拖到窗口上方（显示投放提示，旧版拖拽全程零反馈） */
+  const [dragOver, setDragOver] = useState(false);
 
   const mode = store.state.mode;
   const modeRef = useRef(mode);
@@ -364,6 +375,10 @@ function App() {
     const em = Math.min(80, Math.max(30, s.measure / Math.max(12, s.font_size)));
     root.style.setProperty("--reader-measure", `${em.toFixed(2)}em`);
     root.style.setProperty("--sidebar-w", `${s.sidebar_width}px`);
+    // 编辑区字号跟随阅读字号（低 3px，等宽字体视觉上更大）：
+    // Ctrl+滚轮/Ctrl+0 缩放对编辑区同样生效，不再是"编辑器里按了没反应"
+    const editorSize = Math.max(11, Math.min(28, s.font_size - 3));
+    root.style.setProperty("--editor-font-size", `${editorSize}px`);
   }, [store.state.font_size, store.state.line_spacing, store.state.measure, store.state.sidebar_width]);
 
   /** 改字号时保持页宽 px 不变（em 自动随动） */
@@ -376,6 +391,10 @@ function App() {
     },
     [],
   );
+
+  // Ctrl+滚轮缩放：全应用唯一的 wheel 入口（见 lib/interaction.ts）。
+  // 旧实现在编辑器内直接 return，WebView 又不做整页缩放 → 编辑区按了没反应。
+  useWheelZoom((delta) => setFontSize(storeRef.current.stateRef.current.font_size + delta));
 
   /* ------------------------------ 阅读进度 ------------------------------ */
 
@@ -395,15 +414,13 @@ function App() {
       if (shouldApply) commandReaderJump(pend.top);
     }
 
-    // 分屏：阅读区滚动 → 编辑区比例（联动锁期间吞掉）
-    if (modeRef.current === "split") {
-      if (Date.now() - syncLockRef.current > 160) {
-        const r = p.percent / 100;
-        editorRatioRef.current = r;
-        setEditorRatio((prev) => (prev !== undefined && Math.abs(prev - r) < 0.0015 ? prev : r));
-      } else {
-        syncLockRef.current = 0;
-      }
+    // 分屏联动：只有「真实用户滚动阅读区」才回写编辑区比例。
+    // 程序化滚动（大纲跳转 / 进度恢复 / 高度补偿 / 编辑区同步过来）一律不回写，
+    // 用 origin 判因果，取代 W7 的 160ms 时间锁 —— 时间锁在连续滚轮下必漏。
+    if (modeRef.current === "split" && p.origin === "user") {
+      const r = p.percent / 100;
+      editorRatioRef.current = r;
+      setEditorRatio((prev) => (prev !== undefined && Math.abs(prev - r) < 0.0015 ? prev : r));
     }
   }, []);
 
@@ -433,8 +450,44 @@ function App() {
       const prog = progressRef.current;
       navRef.current.push({ path: wsRef.current.activePath ?? "", scrollTop: prog?.scrollTop ?? 0 });
       readerApiRef.current?.scrollToBlock(index, "start");
+      // 跳完把焦点交回阅读区：随后 PageDown / 空格 / ↑↓ 立刻可用
+      focusScroller(readerApiRef.current?.getScroller() ?? null);
     },
     [],
+  );
+
+  /**
+   * 页内锚点跳转（正文里 `[文字](#章节标题)`）。
+   *
+   * 为什么不能靠浏览器原生行为：
+   *   1) 渲染器不给标题生成 id，`getElementById` 永远拿不到；
+   *   2) 阅读器是虚拟列表，未渲染的块根本不在 DOM 里。
+   * 所以按 GitHub/Typora 的锚点规则把标题文本归一化后匹配 heading，
+   * 拿到块号再 scrollToBlock —— 与大纲跳转走同一条路径。
+   */
+  const jumpAnchor = useCallback(
+    (slug: string) => {
+      const blocks = wsRef.current.activeTab?.blocks;
+      if (!blocks || blocks.length === 0) return;
+      const norm = (s: string): string =>
+        s
+          .trim()
+          .toLowerCase()
+          .replace(/[\s\u3000]+/g, "-")
+          .replace(/[^\p{L}\p{N}\-_.]/gu, "");
+      const want = norm(slug.replace(/^#/, ""));
+      if (!want) return;
+      const hit = blocks.find((b) => b.heading && norm(b.heading.text) === want);
+      if (!hit) {
+        toast(`找不到锚点「${slug}」`);
+        return;
+      }
+      const prog = progressRef.current;
+      navRef.current.push({ path: wsRef.current.activePath ?? "", scrollTop: prog?.scrollTop ?? 0 });
+      readerApiRef.current?.scrollToBlock(hit.index, "start");
+      focusScroller(readerApiRef.current?.getScroller() ?? null);
+    },
+    [toast],
   );
 
   /* ------------------------------ 打开文档 ------------------------------ */
@@ -461,6 +514,40 @@ function App() {
       })();
     },
     [],
+  );
+
+  /**
+   * 正文链接点击总入口。
+   * 放行默认行为 = WebView 整页导航，应用界面直接消失且没有后退键；
+   * 所以一律拦截后分类处理：页内锚点 → block 定位，外链 → 系统浏览器，
+   * 文档间相对链接 → 解析成绝对路径后直接打开。
+   */
+  const handleReaderLink = useCallback(
+    (href: string) => {
+      if (!href) return;
+      if (href.startsWith("#")) {
+        jumpAnchor(href.slice(1));
+        return;
+      }
+      if (/^(https?:|mailto:)/i.test(href)) {
+        void api.openUrl(href);
+        return;
+      }
+      const cur = wsRef.current.activePath;
+      if (cur && !cur.startsWith("demo://")) {
+        const dir = cur.replace(/[\\/][^\\/]*$/, "").replace(/\\/g, "/");
+        const parts = `${dir}/${href.replace(/\\/g, "/")}`.split("/");
+        const stack: string[] = [];
+        for (const seg of parts) {
+          if (seg === "..") stack.pop();
+          else if (seg !== "." && seg !== "") stack.push(seg);
+        }
+        openDocument((dir.startsWith("/") ? "/" : "") + stack.join("/"));
+        return;
+      }
+      toast("无法打开这个链接");
+    },
+    [api, jumpAnchor, openDocument, toast],
   );
 
   /** 点标签切换（不进导航栈）；切换前把当前进度落库 */
@@ -493,8 +580,24 @@ function App() {
     storeRef.current.flush();
     progressByPathRef.current.delete(path);
     closeFindRef.current();
+    // 记住刚关的标签，给 Ctrl+Shift+T 用（最多 10 个）
+    const tab = wsRef.current.tabs.find((t) => t.path === path);
+    if (tab && !tab.virtual) {
+      closedTabsRef.current.unshift(path);
+      if (closedTabsRef.current.length > 10) closedTabsRef.current.length = 10;
+    }
     wsRef.current.closeTab(path);
   }, []);
+
+  /** Ctrl+Shift+T：重开最近关闭的标签（跳过已经不存在的文件由 openFile 自己报错） */
+  const reopenClosedTab = useCallback(() => {
+    const path = closedTabsRef.current.shift();
+    if (!path) {
+      toast("没有可重新打开的标签");
+      return;
+    }
+    openDocument(path);
+  }, [openDocument, toast]);
 
   /* ------------------------------ 命令（菜单/面板/快捷键共用） -------------- */
 
@@ -651,6 +754,8 @@ function App() {
       window.clearTimeout(findRerenderRef.current);
       findRerenderRef.current = null;
     }
+    // 关闭查找后把焦点交回阅读区（否则键盘翻页要再点一下页面才生效）
+    window.setTimeout(() => focusScroller(readerApiRef.current?.getScroller() ?? null), 0);
   }, []);
 
   // 挂到 ref：activateTab / closeTabAndFlush / openDocument 在更早的渲染段引用清理
@@ -787,7 +892,8 @@ function App() {
     const blocks = wsRef.current.activeTab?.blocks;
     if (!blocks || blocks.length === 0) return;
     const idx = Math.max(0, Math.min(blocks.length - 1, Math.floor(r * blocks.length)));
-    syncLockRef.current = Date.now();
+    // 不再设时间锁：scrollToBlock 走 programmaticScroll(..., "jump")，
+    // 阅读器上报的 origin 就是 jump，onProgress 自然不会回写编辑器。
     readerApiRef.current?.scrollToBlock(idx, "start");
   }, []);
 
@@ -847,11 +953,25 @@ function App() {
       try {
       const { getCurrentWebview } = await import("@tauri-apps/api/webview");
       const u = await getCurrentWebview().onDragDropEvent((ev) => {
-          if (ev.payload.type === "drop") {
-            const paths = ev.payload.paths.filter((p) => /\.(md|markdown|txt)$/i.test(p));
-            if (paths.length === 0) return;
+          const kind = ev.payload.type;
+          if (kind === "enter" || kind === "over") {
+            setDragOver(true);
+            return;
+          }
+          if (kind === "leave") {
+            setDragOver(false);
+            return;
+          }
+          if (kind === "drop") {
+            setDragOver(false);
+            const all = ev.payload.paths;
+            const paths = all.filter((p) => /\.(md|markdown|txt)$/i.test(p));
+            if (paths.length === 0) {
+              toast("只支持拖入 .md / .markdown / .txt 文件");
+              return;
+            }
             for (const p of paths) openDocument(p);
-            toast(`已打开 ${paths.length} 个文件`);
+            toast(paths.length > 1 ? `已打开 ${paths.length} 个文件` : `已打开 ${paths[0]!.split(/[\\/]/).pop()}`);
           }
         });
         un = u;
@@ -899,6 +1019,67 @@ function App() {
       }
     });
     return () => void p.then((f) => f());
+  }, []);
+
+  // 关窗前拦一道：有未保存修改就问（自动保存关掉时这是唯一防线）
+  useEffect(() => {
+    if (!isTauriEnv) return;
+    let un: (() => void) | null = null;
+    void (async () => {
+      try {
+        const win = getCurrentWindow();
+        const u = await win.onCloseRequested((event) => {
+          const dirty = wsRef.current.tabs.filter((t) => t.dirty && !t.virtual);
+          if (dirty.length === 0) return; // 没有脏标签：放行，走正常关闭
+          event.preventDefault();
+          const names = dirty
+            .slice(0, 3)
+            .map((t) => t.name)
+            .join("、");
+          setPrompt({
+            kind: "confirm",
+            title: "有未保存的修改",
+            body:
+              dirty.length > 3
+                ? `${names} 等 ${dirty.length} 个文件还没保存，退出前保存吗？`
+                : `${names} 还没保存，退出前保存吗？`,
+            okText: "保存并退出",
+            onOk: () => {
+              void (async () => {
+                for (const t of dirty) {
+                  try {
+                    await wsRef.current.saveTab(t.path);
+                  } catch {
+                    /* 单个失败不阻断退出流程 */
+                  }
+                }
+                try {
+                  await win.destroy();
+                } catch {
+                  /* 忽略 */
+                }
+              })();
+            },
+          });
+        });
+        un = u;
+      } catch {
+        /* 浏览器预览/权限不足：忽略 */
+      }
+    })();
+    return () => un?.();
+  }, []);
+
+  // WebView2 自带的右键菜单（刷新/检查/另存为…）会和自绘菜单打架：
+  // 除输入类元素（需要系统的粘贴/拼写菜单）外一律屏蔽
+  useEffect(() => {
+    const onCtx = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && t.closest("input, textarea, .cm-content")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onCtx);
+    return () => document.removeEventListener("contextmenu", onCtx);
   }, []);
 
   // 字数统计（防抖）
@@ -1046,9 +1227,20 @@ function App() {
   const readerMenu = useCallback(
     (e: MouseEvent) => {
       e.preventDefault();
+      const anchorEl = (e.target as Element | null)?.closest?.("a[href]") ?? null;
+      const linkHref = anchorEl?.getAttribute("href") ?? "";
       const sel = document.getSelection();
       const text = sel?.toString() ?? "";
       const items: CtxMenuItem[] = [];
+      // 链接上右键：先给「打开」（外链走系统浏览器、锚点走块定位）
+      if (linkHref) {
+        items.push({
+          label: linkHref.startsWith("#") ? "跳转到该章节" : "打开链接",
+          action: () => handleReaderLink(linkHref),
+        });
+        items.push({ label: "复制链接地址", action: () => void copyText(linkHref) });
+        items.push({ separator: true });
+      }
       if (text) {
         items.push({ label: "复制", shortcut: "Ctrl+C", action: () => void copyText(text) });
         // P0 #10：从渲染视图拿回 Markdown 源码（选区覆盖块 → Block.srcMd 拼接）
@@ -1087,7 +1279,7 @@ function App() {
       items.push(...buildExportMenuItems(getExportTab, exportDeps));
       setCtxMenu({ x: e.clientX, y: e.clientY, items });
     },
-    [copyText, exportDeps, openFind],
+    [copyText, exportDeps, handleReaderLink, openFind],
   );
 
   const tabMenu = useCallback(
@@ -1170,6 +1362,7 @@ function App() {
       const p = wsRef.current.activePath;
       if (p) closeTabAndFlush(p);
     },
+    onReopenTab: reopenClosedTab,
     onCycleTab: cycleTab,
     onCycleMode: cycleMode,
     onToggleMinimal: toggleMinimal,
@@ -1305,6 +1498,7 @@ function App() {
         jump={readerJump}
         onProgress={onProgress}
         apiRef={readerApiRef}
+        onLinkClick={handleReaderLink}
       />
     ) : null;
 
@@ -1458,9 +1652,15 @@ function App() {
         onOpenWorkspace={cmdOpenWorkspace}
       />
 
+      {dragOver && (
+        <div class="drop-hint" aria-hidden="true">
+          <div class="drop-hint-box">松开以打开 Markdown / 文本文件</div>
+        </div>
+      )}
+
       {prompt && <PromptDialog state={prompt} onClose={() => setPrompt(null)} />}
 
-      <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />
+      <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} onJumpAnchor={jumpAnchor} />
     </div>
   );
 }

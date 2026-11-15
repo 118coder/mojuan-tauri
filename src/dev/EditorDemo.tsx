@@ -11,6 +11,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { EditorPane, type EditorSelectionInfo } from "../components/EditorPane";
 import { buildDemoText } from "./demoText";
+import { programmaticScroll } from "../lib/interaction";
 import "./dev.css";
 
 type Theme = "dark" | "light";
@@ -44,7 +45,7 @@ export function EditorDemo() {
     const top = r * max;
     if (Math.abs(el.scrollTop - top) < 1) return;
     trackEchoRef.current = r; // 这轮滚动由外部触发，回程忽略
-    el.scrollTop = top;
+    programmaticScroll(el, top, "sync");
   };
 
   /** 右栏 -> 编辑区 */

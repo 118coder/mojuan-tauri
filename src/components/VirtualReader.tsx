@@ -15,6 +15,8 @@ import { memo } from "preact/compat";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { Block, ScrollProgress } from "../lib/renderer";
 import { enhanceBlockElement } from "../lib/renderer";
+import { peekOrigin, programmaticScroll } from "../lib/interaction";
+import type { ScrollReason } from "../lib/interaction";
 
 /* -------------------------------------------------------------------------- */
 /* 对外类型                                                                    */
@@ -33,6 +35,13 @@ export interface VirtualReaderProps {
   apiRef?: { current: VirtualReaderHandle | null };
   /** 空文档占位文案 */
   emptyText?: string;
+  /**
+   * 正文里的链接点击（href 原样传入）。
+   * 必须由外层接管：WebView 里放行 `a[href]` 的默认跳转会把整个应用界面
+   * 导航走（Tauri 无地址栏、无后退键，等于"点了链接软件就废了"）；
+   * 页内锚点在虚拟列表里也根本找不到目标元素。
+   */
+  onLinkClick?: (href: string) => void;
 }
 
 export interface VirtualReaderHandle {
@@ -176,8 +185,31 @@ export function VirtualReader(props: VirtualReaderProps) {
   const observedRef = useRef<Map<HTMLElement, number>>(new Map());
   const roRef = useRef<ResizeObserver | null>(null);
   const pendingScrollAdjustRef = useRef(0);
+  /**
+   * 待落地的外部滚动目标（恢复阅读进度 / 百分比跳转）。
+   * 为什么需要重试：外部给的 scrollTop 是绝对像素，而刚挂载时高度模型还是
+   * 「估算值」，totalHeight 偏小时赋值会被浏览器夹断，跳转就被吃掉了
+   * （W7 实测：刷新后恢复进度永远回到顶部）。所以先记目标，
+   * 每次测量刷新 totalHeight 后再试一次，直到真的到达为止。
+   */
+  const pendingTargetRef = useRef<number | null>(null);
   const progressCbRef = useRef(onScrollProgress);
   progressCbRef.current = onScrollProgress;
+
+  /**
+   * 最近一次位置变化的来源。全局 scroll 捕获监听会用「写入后读回的预期值」
+   * 精确认领程序化滚动并把结果缓存下来，这里只读不消费（peekOrigin）。
+   * App 靠这个字段决定要不要联动别的面板，不再靠时间窗猜因果。
+   */
+  const originRef = useRef<ScrollReason>("user");
+
+  /** 全组件唯一允许写 scrollTop 的地方：申报 reason + 登记预期值 */
+  const setScroll = (v: number, reason: ScrollReason): void => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    originRef.current = reason;
+    programmaticScroll(scroller, v, reason);
+  };
 
   /**
    * 请求一次“下一帧”更新。
@@ -217,6 +249,7 @@ export function VirtualReader(props: VirtualReaderProps) {
       start: rangeRef.current.start,
       end: rangeRef.current.end,
       rendered: rangeRef.current.end - rangeRef.current.start,
+      origin: originRef.current,
     };
   };
 
@@ -271,6 +304,7 @@ export function VirtualReader(props: VirtualReaderProps) {
       start,
       end,
       rendered: end - start,
+      origin: originRef.current,
     });
   };
 
@@ -321,6 +355,16 @@ export function VirtualReader(props: VirtualReaderProps) {
     return true;
   };
 
+  /** 尝试落地待处理的滚动目标（到达即清空） */
+  const applyPendingTarget = (): void => {
+    const scroller = scrollerRef.current;
+    const target = pendingTargetRef.current;
+    if (!scroller || target == null) return;
+    const next = Math.max(0, Math.min(target, Math.max(0, scroller.scrollHeight - scroller.clientHeight)));
+    setScroll(next, "jump");
+    if (Math.abs(scroller.scrollTop - target) < 2) pendingTargetRef.current = null;
+  };
+
   /** 批量测量 + 应用滚动补偿 */
   const flushMeasurements = (): void => {
     let changed = false;
@@ -335,13 +379,14 @@ export function VirtualReader(props: VirtualReaderProps) {
     if (changed) {
       setTotalHeight(modelRef.current.fw.total());
       setRev((v) => v + 1);
+      // 高度模型更新后重试一次待落地的跳转（恢复进度/百分比跳转）
+      applyPendingTarget();
     }
     const adjust = pendingScrollAdjustRef.current;
     pendingScrollAdjustRef.current = 0;
     const scroller = scrollerRef.current;
     if (adjust !== 0 && scroller) {
-      const next = Math.max(0, scroller.scrollTop + adjust);
-      if (Math.abs(next - scroller.scrollTop) > 0.5) scroller.scrollTop = next;
+      setScroll(Math.max(0, scroller.scrollTop + adjust), "measure");
     }
   };
 
@@ -356,7 +401,7 @@ export function VirtualReader(props: VirtualReaderProps) {
     if (roRef.current) roRef.current.disconnect();
     setTotalHeight(m.fw.total());
     setRev((v) => v + 1);
-    if (scroller) scroller.scrollTop = 0;
+    if (scroller) setScroll(0, "reset");
     rangeRef.current = { start: 0, end: Math.min(m.n, 12) };
     setRange(rangeRef.current);
     updateRange(true);
@@ -403,6 +448,9 @@ export function VirtualReader(props: VirtualReaderProps) {
     if (!scroller) return;
 
     const onScroll = () => {
+      const scroller = scrollerRef.current;
+      // 全局捕获监听已用「预期值」精确认领过这次 scroll，这里只读结果，不重复消费。
+      if (scroller) originRef.current = peekOrigin(scroller).reason;
       requestFrame(() => updateRange());
     };
     scroller.addEventListener("scroll", onScroll, { passive: true });
@@ -426,10 +474,17 @@ export function VirtualReader(props: VirtualReaderProps) {
     if (typeof scrollTopByProp !== "number") return;
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    scroller.scrollTop = scrollTopByProp;
+    pendingTargetRef.current = scrollTopByProp;
+    applyPendingTarget();
     updateRange(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scrollTopByProp]);
+
+  // blocks 换了（新文档）：清掉不属于新文档的跳转目标
+  useEffect(() => {
+    pendingTargetRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [blocks]);
 
   // 可见块增强：代码高亮 / mermaid（按挂载区间逐个处理，不阻塞滚动）
   useEffect(() => {
@@ -489,7 +544,7 @@ export function VirtualReader(props: VirtualReaderProps) {
     if (align === "center") y = top - (vh - h) / 2;
     else if (align === "end") y = top - vh + h;
     const max = Math.max(0, m.fw.total() - vh);
-    scroller.scrollTop = Math.max(0, Math.min(y, max));
+    setScroll(Math.max(0, Math.min(y, max)), "jump");
     updateRange(true);
   };
 
@@ -511,8 +566,7 @@ export function VirtualReader(props: VirtualReaderProps) {
     apiRef.current = {
       scrollToBlock,
       scrollToTop: () => {
-        const scroller = scrollerRef.current;
-        if (scroller) scroller.scrollTop = 0;
+        if (scrollerRef.current) setScroll(0, "jump");
         updateRange(true);
       },
       getProgress: computeProgress,
@@ -528,7 +582,29 @@ export function VirtualReader(props: VirtualReaderProps) {
   const offsets = visible.map((_, i) => model.fw.prefix(range.start + i));
 
   return (
-    <div class="mj-reader" ref={scrollerRef}>
+    <div
+      class="mj-reader"
+      ref={scrollerRef}
+      data-scroll-kind="reader"
+      // 可聚焦才能用键盘翻页（PageDown/空格/↑↓ 是滚动容器的原生能力）。
+      // 旧版是纯 div，点一下焦点落在 body 上，按 PageDown 毫无反应。
+      tabIndex={0}
+      role="document"
+      aria-label="文档内容"
+      onPointerDown={(e: PointerEvent) => {
+        if (e.button !== 0) return; // 右键/中键不动焦点
+        const el = scrollerRef.current;
+        if (el && document.activeElement !== el) el.focus({ preventScroll: true });
+      }}
+      onClick={(e: MouseEvent) => {
+        // 正文链接一律接管：默认跳转会把 WebView 整页导航走（应用界面直接消失），
+        // 页内锚点也因为虚拟列表里目标块没挂载而失效。
+        const a = (e.target as Element | null)?.closest?.("a[href]");
+        if (!(a instanceof HTMLAnchorElement)) return;
+        e.preventDefault();
+        props.onLinkClick?.(a.getAttribute("href") ?? "");
+      }}
+    >
       {blocks.length === 0 ? (
         <div class="mj-reader-empty">{emptyText ?? "没有可显示的内容"}</div>
       ) : (

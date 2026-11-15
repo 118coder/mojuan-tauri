@@ -32,15 +32,29 @@ export function StatusBar(props: StatusBarProps) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * Esc 取消标记。
+   * 旧实现在 Esc 里 setEditing(false)，紧随其后的 onBlur 又会 commit 一次；
+   * 此时 value 已被清空，Number("") === 0 → 进度直接跳到 0%（文档回顶）。
+   * 用户按 Esc 想「算了」，结果被扔回开头——典型的输入框失焦陷阱。
+   */
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
 
   const commit = () => {
+    if (cancelledRef.current) {
+      cancelledRef.current = false;
+      setEditing(false);
+      setValue("");
+      return;
+    }
     const v = value.trim().replace("%", "");
     const n = Number(v);
-    if (Number.isFinite(n)) onPercentJump(Math.max(0, Math.min(100, n)));
+    // 空输入不跳转（按 Esc / 点空白处退出不应改变阅读位置）
+    if (v !== "" && Number.isFinite(n)) onPercentJump(Math.max(0, Math.min(100, n)));
     setEditing(false);
     setValue("");
   };
@@ -77,7 +91,12 @@ export function StatusBar(props: StatusBarProps) {
             onKeyDown={(e: KeyboardEvent) => {
               e.stopPropagation();
               if (e.key === "Enter") commit();
-              else if (e.key === "Escape") setEditing(false);
+              else if (e.key === "Escape") {
+                e.preventDefault();
+                cancelledRef.current = true;
+                setEditing(false);
+                setValue("");
+              }
             }}
             onBlur={commit}
             size={6}
@@ -87,9 +106,10 @@ export function StatusBar(props: StatusBarProps) {
       ) : (
         <button
           class="sb-item sb-percent"
-          title="点击输入百分比跳转"
+          title="点击输入百分比跳转（Ctrl+G 也可）"
           data-testid="sb-percent"
           onClick={() => {
+            cancelledRef.current = false;
             setValue("");
             setEditing(true);
           }}

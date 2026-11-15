@@ -104,6 +104,12 @@ export interface ScrollProgress {
   end: number;
   /** 当前挂载的块数量（DOM 级虚拟化指标） */
   rendered: number;
+  /**
+   * 本次位置变化的来源（由 lib/interaction.ts 的 ScrollReason 约束，
+   * 这里写字面量联合类型避免渲染层反向依赖交互层）。
+   * 只有 "user" 才能触发跨面板联动，程序化滚动不得回写别的控件。
+   */
+  origin: "user" | "jump" | "restore" | "sync" | "measure" | "reset" | "follow";
 }
 
 /* -------------------------------------------------------------------------- */
