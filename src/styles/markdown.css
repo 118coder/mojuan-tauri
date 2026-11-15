@@ -1,0 +1,374 @@
+/* ==========================================================================
+   墨卷 Markdown 渲染样式（W3）
+   - 标题/段落/列表/任务列表/表格/引用/代码/公式/脚注/图片/水平线
+   - 代码块：Shiki 双主题（light-plus 内联色 + --shiki-dark 暗色变量）
+   - 内容排版对齐 egui 版：正文 16px / 行高 1.8 / 最大宽度 720px
+   ========================================================================== */
+
+/* ------------------------------- 阅读器骨架 ------------------------------- */
+
+.mj-reader {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--content);
+  /* 滚动性能：限制布局/绘制的传播范围（不能用 size containment，
+     否则弹性布局下的高度计算会失真） */
+  contain: layout paint;
+  overscroll-behavior: contain;
+}
+
+.mj-reader-empty {
+  padding: 80px 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 14px;
+}
+
+/* 画布：高度 = 全部块高度之和，内部块绝对定位、按 transform 偏移 */
+.mj-canvas {
+  position: relative;
+  width: 100%;
+}
+
+/*
+ * 块：绝对定位 + transform 偏移。
+ * 必须绝对定位，否则 transform 不会改变文档流位置；
+ * 绝对定位同时保证 DOM 顺序 = 文档顺序，原生文本选择才能跨块工作。
+ *
+ * 注意：这里的 padding 用内边距而非子元素 margin，避免 margin 塌陷导致
+ * getBoundingClientRect 量不到真实占位高度（会引发滚动抖动）。
+ */
+.mj-block {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  box-sizing: border-box;
+  /* 隔离块内的布局影响，测量更稳定 */
+  contain: layout style;
+}
+
+/* 块内层：正文排版容器（左右留白 + 最大宽度居中） */
+.mj-block-inner {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 6px 40px;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.8;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  /* 中文排版：标点挤压由浏览器处理，不强制两端对齐 */
+  text-align: left;
+  /* 建立 BFC：阻止首尾子元素 margin 塌陷到外层，
+     否则 getBoundingClientRect 量到的高度会偏小，导致滚动跳变 */
+  display: flow-root;
+}
+
+/* ------------------------------- 标题 ------------------------------- */
+
+.mj-block-inner h1,
+.mj-block-inner h2,
+.mj-block-inner h3,
+.mj-block-inner h4,
+.mj-block-inner h5,
+.mj-block-inner h6 {
+  margin: 0;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  scroll-margin-top: 20px;
+}
+
+.mj-block-inner h1 {
+  font-size: 1.9em;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid var(--border);
+}
+.mj-block-inner h2 {
+  font-size: 1.5em;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--border);
+}
+.mj-block-inner h3 { font-size: 1.24em; }
+.mj-block-inner h4 { font-size: 1.08em; }
+.mj-block-inner h5 { font-size: 1em; color: var(--text-dim); }
+.mj-block-inner h6 { font-size: 0.94em; color: var(--text-faint); }
+
+/* ------------------------------- 段落与行内 ------------------------------- */
+
+.mj-block-inner p {
+  margin: 0;
+  padding: 8px 0;
+}
+
+.mj-block-inner strong { font-weight: 650; }
+.mj-block-inner em { font-style: italic; }
+.mj-block-inner del { color: var(--text-faint); }
+
+.mj-block-inner a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.mj-block-inner a:hover {
+  border-bottom-color: var(--accent);
+}
+
+/* 行内代码 */
+.mj-block-inner code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--inline-code-bg);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+  /* 行内代码里的换行不折行，避免看起来像多行 */
+  white-space: pre-wrap;
+}
+
+/* 图片：块级，圆角 */
+.mj-block-inner img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  display: block;
+  margin: 8px 0;
+}
+
+/* 水平线 */
+.mj-block-inner hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+
+/* ------------------------------- 列表 ------------------------------- */
+
+.mj-block-inner ul,
+.mj-block-inner ol {
+  margin: 0;
+  padding: 6px 0 6px 1.9em;
+}
+.mj-block-inner li { padding: 1px 0; }
+.mj-block-inner li > p { padding: 2px 0; }
+.mj-block-inner li > ul,
+.mj-block-inner li > ol { padding-top: 2px; padding-bottom: 2px; }
+
+/* 任务列表 */
+.mj-block-inner .contains-task-list {
+  list-style: none;
+  padding-left: 0.4em;
+}
+.mj-block-inner .task-list-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.mj-block-inner .task-list-item-checkbox {
+  margin: 0.5em 0 0;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: default;
+}
+
+/* ------------------------------- 表格 ------------------------------- */
+
+.mj-block-inner table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 10px 0;
+  font-size: 0.94em;
+  /* 表格整体可横向滚动 */
+  display: block;
+  overflow-x: auto;
+}
+.mj-block-inner thead { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.mj-block-inner th,
+.mj-block-inner td {
+  border: 1px solid var(--border);
+  padding: 7px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.mj-block-inner th { font-weight: 600; }
+.mj-block-inner tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--text) 2.5%, transparent);
+}
+
+/* ------------------------------- 引用 ------------------------------- */
+
+.mj-block-inner blockquote {
+  margin: 8px 0;
+  padding: 6px 16px;
+  background: var(--quote-bg);
+  border-left: 3px solid var(--quote-bar);
+  border-radius: 0 6px 6px 0;
+  color: var(--text-dim);
+}
+.mj-block-inner blockquote p { padding: 4px 0; }
+
+/* ------------------------------- 代码块 ------------------------------- */
+
+.mj-code-block {
+  margin: 10px 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+/* 语言标签条 */
+.mj-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.mj-code-lang { text-transform: lowercase; }
+
+/* 占位与高亮后的 pre 共用排版 */
+.mj-code-block pre,
+.mj-code-plain {
+  margin: 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.65;
+  background: transparent;
+  tab-size: 2;
+}
+
+.mj-code-block pre code {
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Shiki 输出的 <pre class="shiki">：底色由内联样式给出，这里只做排版兜底 */
+.mj-code-block pre.shiki {
+  color: var(--text);
+  background: var(--code-bg) !important;
+}
+.mj-code-block pre.shiki code { background: none; }
+
+/* 双主题：暗色下用 Shiki 的 --shiki-dark 变量覆盖内联色 */
+:root[data-theme="dark"] .shiki,
+:root[data-theme="dark"] .shiki span {
+  color: var(--shiki-dark) !important;
+  background-color: transparent !important;
+  font-style: var(--shiki-dark-font-style) !important;
+  font-weight: var(--shiki-dark-font-weight) !important;
+  text-decoration: var(--shiki-dark-text-decoration) !important;
+}
+:root[data-theme="dark"] .mj-code-block pre.shiki {
+  background-color: var(--code-bg) !important;
+}
+
+/* ------------------------------- KaTeX ------------------------------- */
+
+.mj-block-inner .katex {
+  font-size: 1.08em;
+}
+.mj-block-inner .katex-display {
+  margin: 10px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+/* 公式块占位段落（插件输出 <p class='katex-block'>） */
+.mj-block-inner p.katex-block {
+  padding: 4px 0;
+  text-align: center;
+}
+.mj-block-inner .katex-error {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ------------------------------- Mermaid ------------------------------- */
+
+.mj-mermaid {
+  margin: 12px 0;
+  min-height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow-x: auto;
+}
+.mj-mermaid[data-state="pending"] { min-height: 120px; }
+.mj-mermaid svg { max-width: 100%; height: auto; }
+
+.mj-mermaid-hint {
+  color: var(--text-faint);
+  font-size: 12.5px;
+  user-select: none;
+}
+
+.mj-mermaid-error {
+  width: 100%;
+  color: var(--danger);
+  font-size: 13px;
+}
+.mj-mermaid-error-title { font-weight: 600; margin-bottom: 6px; }
+.mj-mermaid-error-msg {
+  margin: 0;
+  padding: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ------------------------------- 脚注 ------------------------------- */
+
+.mj-block-inner .footnotes-sep {
+  margin: 16px 0 8px;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.mj-block-inner .footnotes {
+  font-size: 0.9em;
+  color: var(--text-dim);
+}
+.mj-block-inner .footnotes-list { padding-left: 1.6em; }
+.mj-block-inner .footnote-item p { padding: 2px 0; }
+.mj-block-inner .footnote-ref a,
+.mj-block-inner .footnote-backref {
+  text-decoration: none;
+  border-bottom: none;
+}
+
+/* ------------------------------- 拖拽/选区细节 ------------------------------- */
+
+/* 正文允许自由选择：这是 Tauri 版换壳的核心诉求，绝不能加 user-select: none */
+.mj-block-inner {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: auto;
+}
+
+/* 选中高亮跟随主题 */
+.mj-block-inner ::selection { background: var(--sel-bg); }

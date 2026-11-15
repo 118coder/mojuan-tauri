@@ -1,0 +1,133 @@
+/**
+ * 演示页样式：仅服务 W5 演示，不参与正式界面。
+ * 颜色一律取 theme.css 变量，验证主题切换时编辑区同步变化。
+ */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+.dev-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+
+.dev-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 12.5px;
+}
+
+.dev-title {
+  font-size: 13px;
+  margin-right: 4px;
+}
+
+.dev-toolbar button {
+  font-family: var(--font-ui);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  background: var(--elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: default;
+}
+
+.dev-toolbar button:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.dev-stat {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.dev-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.dev-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dev-editor-pane {
+  flex: 1.15;
+  border-right: 1px solid var(--border);
+  background: var(--code-bg);
+}
+
+.dev-mirror-pane {
+  flex: 0.85;
+  background: var(--content);
+}
+
+.dev-mirror-caption {
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* 预览 + 比例条并排 */
+.dev-mirror-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+}
+
+.dev-mirror-preview {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 16px;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 细长比例条：高度固定 100%，内部有一个超高 spacer 产生滚动空间 */
+.dev-mirror-track {
+  width: 14px;
+  flex-shrink: 0;
+  overflow-y: scroll;
+  overflow-x: hidden;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  scrollbar-width: none;
+}
+
+.dev-mirror-track::-webkit-scrollbar {
+  display: none;
+}
+
+.dev-mirror-spacer {
+  width: 1px;
+}

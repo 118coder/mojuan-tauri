@@ -1,0 +1,187 @@
+/* ==========================================================================
+   墨卷 W3 演示页样式（顶栏 44 + 工具条 + 侧栏 210 + 内容区）
+   W4 会替换为正式界面样式
+   ========================================================================== */
+
+/* 演示工具条：紧贴 TitleBar 下方 */
+.demo-toolbar {
+  height: 38px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.demo-title {
+  font-weight: 600;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.demo-stat {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.demo-spacer { flex: 1; min-width: 8px; }
+
+.demo-badge {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* 演示工具条里的 ghost 按钮更紧凑 */
+.demo-toolbar button.ghost {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+/* 侧栏大纲 */
+.demo-outline {
+  border-right: 1px solid var(--border);
+}
+
+.outline-head {
+  padding: 10px 12px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-faint);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.outline-window {
+  font-weight: 400;
+  color: var(--text-faint);
+  opacity: 0.75;
+}
+
+.outline-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 6px 10px;
+}
+
+.outline-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  text-align: left;
+  font-size: 12.5px;
+  font-family: var(--font-ui);
+  line-height: 1.4;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: default;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.outline-item:hover { background: var(--hover); color: var(--text); }
+
+/* 内容区：阅读器 + 状态条 */
+.reader-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.reader-error {
+  padding: 40px;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+.reader-loading {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.reader-loading-hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.spinner {
+  width: 26px;
+  height: 26px;
+  border: 2.5px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: mj-spin 0.8s linear infinite;
+}
+
+@keyframes mj-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 底部状态条 */
+.demo-statusbar {
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.demo-statusbar .jump-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-faint);
+}
+
+.demo-statusbar .jump-box input {
+  width: 88px;
+  padding: 2px 6px;
+  font-size: 11.5px;
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+.demo-statusbar .jump-box input:focus { border-color: var(--accent); }
+
+.demo-statusbar button.ghost {
+  padding: 1px 8px;
+  font-size: 11.5px;
+}
+
+.demo-source {
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+}

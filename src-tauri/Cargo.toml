@@ -1,0 +1,36 @@
+[package]
+name = "mojuan-tauri"
+version = "0.3.0"
+description = "墨卷 —— 纯本地 Markdown 阅读与编辑器（Tauri 版）"
+authors = ["mojuan"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "mojuan_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# protocol-asset：本地图片走 asset:// 协议（convertFileSrc），scope 在 tauri.conf.json 里配
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 复用 egui 版的 Rust 核心：文件/GBK/工作区/搜索/大文档切片/设置持久化/更新
+# default-features = false：关掉 onig 高亮引擎（MSVC+中文路径下 C 库编译失败；前端用 Shiki）
+# 绝对路径：构建经由 junction D:\mojuan-tauri 进入（原生工具链不支持中文路径），相对路径会断
+mojuan-core = { path = "E:\\网页小工具\\墨卷\\mojuan\\crates\\core", default-features = false }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
