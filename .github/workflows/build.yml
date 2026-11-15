@@ -36,6 +36,6 @@ jobs:
         with:
           name: mojuan-windows-${{ github.sha }}
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/mojuan-tauri.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            src-tauri/target/x86_64-pc-windows-msvc/release/mojuan-tauri.exe
           if-no-files-found: error
