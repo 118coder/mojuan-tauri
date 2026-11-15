@@ -11,7 +11,7 @@
  * 4. 主题色全部取自 src/styles/theme.css 的 CSS 变量，data-theme 切换即时生效；
  *    EditorView 的 dark 标记只影响 CodeMirror 基础主题（光标、面板底色等）。
  */
-import { useEffect, useRef } from "preact/hooks";
+import { useLayoutEffect, useRef } from "preact/hooks";
 import {
   Compartment,
   EditorState,
@@ -83,31 +83,35 @@ type ThemeSpec = { [selector: string]: StyleRule };
 /**
  * 编辑区主题规则（与 theme.css 变量对齐）。
  *
- * 选择器统一写成 `&.cm-editor .cm-xxx`：CodeMirror 内置主题用的是
- * `.<前缀> .<light|dark 类> .cm-xxx` 三级类选择器，只写 `.cm-xxx`
- * 会因优先级不足被内置色覆盖（例如行号栏底色、选区色）。
+ * 选择器统一带 `&.cm-editor.mj-editor`：
+ * - 多一个稳定类 `mj-editor`（由 editorAttributes 挂上），优先级比 CodeMirror
+ *   内置主题的 `.<前缀>.<light|dark> .cm-xxx` 高一级，切主题换模块时顺序变化
+ *   也不会被内置色反压。
+ * - 括号内全部用 CSS 变量，深浅主题共用同一份规则，只有 dark 标记不同。
  */
 function buildThemeSpec(): ThemeSpec {
   return {
     "&": {
       height: "100%",
+      flexGrow: "1",
+      minHeight: "0",
       fontSize: "14px",
       color: "var(--text)",
       backgroundColor: "var(--code-bg)",
     },
     "&.cm-focused": { outline: "none" },
-    "&.cm-editor .cm-scroller": {
+    "&.cm-editor.mj-editor .cm-scroller": {
       fontFamily: "var(--font-mono)",
       lineHeight: "1.6",
       overflow: "auto",
     },
-    "&.cm-editor .cm-content": {
+    "&.cm-editor.mj-editor .cm-content": {
       // 底部留白，最后一行不会贴住窗口边
       padding: "12px 0 48px",
     },
-    "&.cm-editor .cm-line": { padding: "0 18px 0 10px" },
+    "&.cm-editor.mj-editor .cm-line": { padding: "0 18px 0 10px" },
     // 行号栏：透明底 + 极细分割线，和内容区同一底色
-    "&.cm-editor .cm-gutters": {
+    "&.cm-editor.mj-editor .cm-gutters": {
       backgroundColor: "transparent",
       color: "var(--text-faint)",
       borderRight: "1px solid var(--border)",
@@ -115,58 +119,64 @@ function buildThemeSpec(): ThemeSpec {
       fontSize: "12px",
       userSelect: "none",
     },
-    "&.cm-editor .cm-lineNumbers .cm-gutterElement": {
+    "&.cm-editor.mj-editor .cm-lineNumbers .cm-gutterElement": {
       padding: "0 8px 0 12px",
       minWidth: "30px",
     },
-    "&.cm-editor .cm-activeLine": { backgroundColor: "var(--accent-soft)" },
-    "&.cm-editor .cm-activeLineGutter": {
+    "&.cm-editor.mj-editor .cm-activeLine": {
+      backgroundColor: "var(--accent-soft)",
+    },
+    "&.cm-editor.mj-editor .cm-activeLineGutter": {
       backgroundColor: "transparent",
       color: "var(--text-dim)",
     },
     // 选区：统一用主题选区色（drawSelection 自绘层 + 原生兜底）
-    "&.cm-editor .cm-selectionBackground": {
+    "&.cm-editor.mj-editor .cm-selectionBackground": {
       backgroundColor: "var(--sel-bg) !important",
     },
-    "&.cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":
+    "&.cm-editor.mj-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground":
       {
         backgroundColor: "var(--sel-bg) !important",
       },
-    "&.cm-editor .cm-cursor, &.cm-editor .cm-dropCursor": {
+    "&.cm-editor.mj-editor .cm-cursor, &.cm-editor.mj-editor .cm-dropCursor": {
       borderLeftColor: "var(--accent)",
       borderLeftWidth: "2px",
     },
     // 括号匹配
-    "&.cm-editor.cm-focused .cm-matchingBracket": {
+    "&.cm-editor.mj-editor.cm-focused .cm-matchingBracket": {
       backgroundColor: "var(--sel-bg)",
       outline: "1px solid var(--accent)",
     },
-    "&.cm-editor.cm-focused .cm-nonmatchingBracket": {
+    "&.cm-editor.mj-editor.cm-focused .cm-nonmatchingBracket": {
       backgroundColor: "color-mix(in srgb, var(--danger) 28%, transparent)",
     },
     // 查找命中：全部弱高亮，当前项加强
-    "&.cm-editor .cm-searchMatch": {
+    "&.cm-editor.mj-editor .cm-content .cm-searchMatch": {
       backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)",
       borderRadius: "2px",
     },
-    "&.cm-editor .cm-searchMatch-selected": {
+    "&.cm-editor.mj-editor .cm-content .cm-searchMatch-selected": {
       backgroundColor: "color-mix(in srgb, var(--accent) 46%, transparent)",
     },
     // 查找面板（顶部条）
-    "&.cm-editor .cm-panels": {
+    "&.cm-editor.mj-editor .cm-panels": {
       backgroundColor: "var(--panel)",
       color: "var(--text)",
       borderColor: "var(--border)",
     },
-    "&.cm-editor .cm-panels-top": { borderBottom: "1px solid var(--border)" },
-    "&.cm-editor .cm-panel.cm-search": {
+    "&.cm-editor.mj-editor .cm-panels-top": {
+      borderBottom: "1px solid var(--border)",
+    },
+    "&.cm-editor.mj-editor .cm-panels .cm-search": {
       // 保持块级流：内置面板靠 <br> 把「替换」拆到第二行，改成 flex 会失效
       padding: "8px 34px 8px 12px",
       fontSize: "12.5px",
       lineHeight: "1.9",
     },
-    "&.cm-editor .cm-panel.cm-search label": { color: "var(--text-dim)" },
-    "&.cm-editor .cm-textfield": {
+    "&.cm-editor.mj-editor .cm-panels .cm-search label": {
+      color: "var(--text-dim)",
+    },
+    "&.cm-editor.mj-editor .cm-textfield": {
       backgroundColor: "var(--content)",
       color: "var(--text)",
       border: "1px solid var(--border)",
@@ -176,8 +186,10 @@ function buildThemeSpec(): ThemeSpec {
       outline: "none",
       minWidth: "9em",
     },
-    "&.cm-editor .cm-textfield:focus": { borderColor: "var(--accent)" },
-    "&.cm-editor .cm-button": {
+    "&.cm-editor.mj-editor .cm-textfield:focus": {
+      borderColor: "var(--accent)",
+    },
+    "&.cm-editor.mj-editor .cm-button": {
       backgroundImage: "none",
       backgroundColor: "var(--elev)",
       border: "1px solid var(--border)",
@@ -187,18 +199,18 @@ function buildThemeSpec(): ThemeSpec {
       padding: "3px 10px",
       cursor: "default",
     },
-    "&.cm-editor .cm-button:hover": {
+    "&.cm-editor.mj-editor .cm-button:hover": {
       backgroundColor: "var(--hover)",
       color: "var(--text)",
     },
-    "&.cm-editor .cm-panel.cm-search [name=close]": {
+    "&.cm-editor.mj-editor .cm-panels .cm-search [name=close]": {
       color: "var(--text-dim)",
       fontSize: "16px",
       lineHeight: "1",
       padding: "0 4px",
       cursor: "default",
     },
-    "&.cm-editor .cm-panel.cm-search [name=close]:hover": {
+    "&.cm-editor.mj-editor .cm-panels .cm-search [name=close]:hover": {
       color: "var(--text)",
     },
   };
@@ -276,10 +288,18 @@ interface ScrollSyncState {
   pending: number | null;
   pendingTimer: number;
   raf: number;
+  /** rAF 兜底定时器：窗口最小化/后台时 rAF 可能长期不触发 */
+  fallbackTimer: number;
 }
 
 function createScrollSyncState(): ScrollSyncState {
-  return { lastEmitted: 0, pending: null, pendingTimer: 0, raf: 0 };
+  return {
+    lastEmitted: 0,
+    pending: null,
+    pendingTimer: 0,
+    raf: 0,
+    fallbackTimer: 0,
+  };
 }
 
 /** 只读/可编辑重配置（两个 facet 必须一起切） */
@@ -358,7 +378,7 @@ export function EditorPane(props: EditorPaneProps) {
   };
 
   /* 创建编辑器（仅一次） */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const sync = scrollSyncRef.current;
@@ -403,6 +423,8 @@ export function EditorPane(props: EditorPaneProps) {
         syntaxHighlighting(markdownHighlightStyle),
         search({ top: true }),
         EditorState.phrases.of(zhPhrases),
+        // 稳定类名：让主题规则的选择器优先级压过 CodeMirror 内置主题
+        EditorView.editorAttributes.of({ class: "mj-editor" }),
         EditorView.contentAttributes.of({ "aria-label": "Markdown 编辑器" }),
         readOnlyCompartment.of(readOnlyExtension(!!props.readOnly)),
         themeCompartment.of(
@@ -455,11 +477,27 @@ export function EditorPane(props: EditorPaneProps) {
     };
 
     const onScroll = () => {
-      if (sync.raf) return;
-      sync.raf = window.requestAnimationFrame(() => {
-        sync.raf = 0;
+      if (!sync.raf) {
+        sync.raf = window.requestAnimationFrame(() => {
+          sync.raf = 0;
+          if (sync.fallbackTimer) {
+            window.clearTimeout(sync.fallbackTimer);
+            sync.fallbackTimer = 0;
+          }
+          emitScroll();
+        });
+      }
+      // 兜底：窗口最小化/被遮挡时 rAF 可能不触发，用定时器保证比例照常上报。
+      // 每次滚动都重置定时器，连续拖动期间不会重复上报。
+      if (sync.fallbackTimer) window.clearTimeout(sync.fallbackTimer);
+      sync.fallbackTimer = window.setTimeout(() => {
+        sync.fallbackTimer = 0;
+        if (sync.raf) {
+          window.cancelAnimationFrame(sync.raf);
+          sync.raf = 0;
+        }
         emitScroll();
-      });
+      }, 60);
     };
     view.scrollDOM.addEventListener("scroll", onScroll, { passive: true });
 
@@ -486,8 +524,10 @@ export function EditorPane(props: EditorPaneProps) {
       view.contentDOM.removeEventListener("compositionend", onCompositionEnd);
       if (compositionEndTimer) window.clearTimeout(compositionEndTimer);
       if (sync.raf) window.cancelAnimationFrame(sync.raf);
+      if (sync.fallbackTimer) window.clearTimeout(sync.fallbackTimer);
       if (sync.pendingTimer) window.clearTimeout(sync.pendingTimer);
       sync.raf = 0;
+      sync.fallbackTimer = 0;
       sync.pending = null;
       sync.pendingTimer = 0;
       view.destroy();
@@ -497,7 +537,7 @@ export function EditorPane(props: EditorPaneProps) {
   }, []);
 
   /* 外部 value 回写（切换文档 / 重新加载） */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     if (!view) return;
     // 上层把我们刚产出的内容原样回传（受控组件的常见形态）：无需任何动作，
@@ -517,7 +557,7 @@ export function EditorPane(props: EditorPaneProps) {
   }, [props.value]);
 
   /* 主题切换：只重配置主题隔间 */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     if (!view || currentThemeRef.current === props.theme) return;
     currentThemeRef.current = props.theme;
@@ -529,7 +569,7 @@ export function EditorPane(props: EditorPaneProps) {
   }, [props.theme]);
 
   /* 只读切换 */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     const ro = !!props.readOnly;
     if (!view || currentReadOnlyRef.current === ro) return;
@@ -542,7 +582,7 @@ export function EditorPane(props: EditorPaneProps) {
   }, [props.readOnly]);
 
   /* 外部驱动滚动（阅读侧 -> 编辑区） */
-  useEffect(() => {
+  useLayoutEffect(() => {
     const view = viewRef.current;
     if (!view || props.scrollToRatio === undefined) return;
     applyExternalRatio(view, props.scrollToRatio, scrollSyncRef.current);

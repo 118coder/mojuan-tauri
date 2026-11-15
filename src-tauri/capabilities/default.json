@@ -18,6 +18,7 @@
     "core:window:allow-set-position",
     "core:window:allow-set-size",
     "fs:default",
-    "dialog:default"
+    "dialog:default",
+    "clipboard-manager:default"
   ]
 }

@@ -22,33 +22,37 @@ const HUGE_PATH = "D:/cache/perf/huge.md";
 
 /**
  * 读取演示文档：
- *  1) 先尝试 huge.md（仅开发服务器可用，Tauri 打包后不存在）；
- *  2) 失败则生成 30 万字中文演示文档（含全要素）。
+ *  1) URL 带 ?doc=builtin 时强制用内置生成文档（含 mermaid/公式/任务列表等全要素）；
+ *  2) 否则先尝试 huge.md（仅开发服务器可用，Tauri 打包后不存在）；
+ *  3) 都失败则生成 30 万字中文演示文档。
  */
 export async function loadDemoDoc(): Promise<DemoDoc> {
   const t0 = performance.now();
+  const forceBuiltin =
+    typeof location !== "undefined" && new URLSearchParams(location.search).get("doc") === "builtin";
 
-  // vite.config.ts 里的 demoFilePlugin 提供的只读通道（/@fs/ 会被 SPA fallback 拦成 index.html）
-  // 第二个地址是 Tauri asset 协议下的备用尝试（W4 接 read_doc 后此段整体替换）
-  const candidates = ["/__demo/huge.md", "/@fs/" + HUGE_PATH];
-  for (const url of candidates) {
-    try {
-      const resp = await fetch(url, { cache: "no-store" });
-      if (!resp.ok) continue;
-      const type = resp.headers.get("content-type") ?? "";
-      // 命中 SPA fallback 时返回的是 HTML，必须排除
-      if (type.includes("text/html")) continue;
-      const text = await resp.text();
-      if (text.length > 100_000) {
-        return {
-          text,
-          source: "huge.md（千万字压测件）",
-          chars: text.length,
-          loadMs: performance.now() - t0,
-        };
+  if (!forceBuiltin) {
+    // vite.config.ts 里的 demoFilePlugin 提供的只读通道（/@fs/ 会被 SPA fallback 拦成 index.html）
+    const candidates = ["/__demo/huge.md", "/@fs/" + HUGE_PATH];
+    for (const url of candidates) {
+      try {
+        const resp = await fetch(url, { cache: "no-store" });
+        if (!resp.ok) continue;
+        const type = resp.headers.get("content-type") ?? "";
+        // 命中 SPA fallback 时返回的是 HTML，必须排除
+        if (type.includes("text/html")) continue;
+        const text = await resp.text();
+        if (text.length > 100_000) {
+          return {
+            text,
+            source: "huge.md（千万字压测件）",
+            chars: text.length,
+            loadMs: performance.now() - t0,
+          };
+        }
+      } catch {
+        // 继续尝试下一个来源
       }
-    } catch {
-      // 继续尝试下一个来源
     }
   }
 

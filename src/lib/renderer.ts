@@ -9,6 +9,11 @@
  *  4. KaTeX 行内/块级公式同步渲染（轻量，不延迟）；
  *  5. mermaid 只输出占位卡片，块可见时才异步 import + mermaid.run，失败降级为错误卡片。
  *
+ * W4a 追加：
+ *  - Block.srcMd：块的 Markdown 原文切片（token.map 行号），供「复制为 Markdown」；
+ *  - RenderOptions.query / currentHit / caseSensitive：渲染时注入 <mark data-hit> 查找高亮；
+ *  - setReaderFontSize / getReaderFontSize：正文字号缩放（--reader-font-size）。
+ *
  * 性能基线（D:\cache\perf\huge.md，22MB / 1087 万字 / 79,663 个顶级块）：
  *  - md.parse 是主要成本（约 1.8s，单次，不可省）；
  *  - 逐块 renderer.render 合计约 0.2s；
@@ -60,12 +65,29 @@ export interface Block {
   textLength: number;
   /** 内容版本号：html 被就地升级时自增，供 memo 组件感知变化 */
   revision: number;
+  /**
+   * 该块的 Markdown 原文切片（按 token.map 行号从原文切出）。
+   * 「复制为 Markdown」用：选中若干渲染块 → 按序拼接对应 srcMd 回源码。
+   * W4a 约定：块内选中粒度简化为整块（跨块选中按被选中的块序列拼接）。
+   * renderBlocks 总会填充；手工构造 Block（如纯文本渲染路径）可缺省，
+   * 此时右键「复制为 Markdown」自动退化为纯文本复制。
+   */
+  srcMd?: string;
 }
 
 /** 渲染选项 */
 export interface RenderOptions {
   /** 初始主题，仅影响 mermaid 配色；Shiki 输出双主题由 CSS 切换 */
   theme?: ReaderTheme;
+  /**
+   * 页内查找词（W4a）：非空时渲染出的块 HTML 里会把全部命中包成
+   * `<mark data-hit="全局序号">`；当前命中额外带 class="current"。
+   */
+  query?: string;
+  /** 当前命中序号（0 起，对应 data-hit 值）；配合 query 使用 */
+  currentHit?: number;
+  /** 查找是否区分大小写（默认否） */
+  caseSensitive?: boolean;
 }
 
 export type ReaderTheme = "dark" | "light";
@@ -103,6 +125,8 @@ interface PendingCode {
 interface PendingMermaid {
   id: string;
   source: string;
+  /** 占位 HTML 原文（查找高亮做字节级保护，见 injectFindMarks） */
+  placeholder: string;
 }
 
 /** 块的内部附加信息（不进入 Block 公开结构） */
@@ -117,9 +141,23 @@ interface BlockMeta {
   pendingHtml?: string;
   /** 高亮中的 Promise（并发去重） */
   highlightPromise?: Promise<boolean>;
+  /** 本次渲染该块的查找命中数（query 非空时才有意义） */
+  hitCount: number;
 }
 
 const blockMeta = new WeakMap<Block, BlockMeta>();
+
+/**
+ * 最近一次 renderBlocks 的结果（W4a「复制为 Markdown」用）：
+ * 右键菜单拿不到 App 的 blocks 状态时，从这里按块序号查 srcMd。
+ * 注意：强引用最后一次渲染的块数组，切换文档后下次 renderBlocks 会自然替换掉。
+ */
+let lastRenderedBlocks: Block[] = [];
+
+/** 最近一次 renderBlocks 产出的块（按序号查 srcMd 用）；从未渲染过时为空数组 */
+export function getRenderedBlocks(): Block[] {
+  return lastRenderedBlocks;
+}
 
 /** 当前正在渲染的块（fence 规则据此登记片段）。逐块同步渲染，无并发问题。 */
 let activeMeta: BlockMeta | null = null;
@@ -168,7 +206,7 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     mermaidSeq++;
     mermaidSources.set(id, code);
     const placeholder = renderMermaidPlaceholder(id, code);
-    activeMeta?.mermaids.push({ id, source: code });
+    activeMeta?.mermaids.push({ id, source: code, placeholder });
     return placeholder;
   }
 
@@ -228,6 +266,11 @@ function escapeHtml(s: string): string {
  * 把 markdown 按顶级块切成 Block[]。
  * 切分规则：token 流中 depth=0 的 token 为一个块的开始；遇到 nesting=1 时向后吞掉
  * 整棵子树（到对应 nesting=-1），保证列表/引用/表格/脚注结构完整、可独立渲染。
+ *
+ * W4a 追加：
+ *  - 每个 Block 附带 srcMd（按首个带 map 的 token 行号从原文切片）；
+ *  - opts.query 非空时把全部命中注入 `<mark data-hit="N">`（当前命中加 class="current"），
+ *    N 是跨块连续编号的全局命中序号；每块命中数存进 meta，可用 getBlockHitCounts 读取。
  */
 export function renderBlocks(source: string, opts: RenderOptions = {}): Block[] {
   if (opts.theme) setRendererTheme(opts.theme);
@@ -235,6 +278,21 @@ export function renderBlocks(source: string, opts: RenderOptions = {}): Block[] 
   const env: Env = {};
   const tokens = md.parse(source, env);
   const blocks: Block[] = [];
+
+  // 原文按行切好，供 srcMd 切片（一次性成本，与 md.parse 同量级内存）
+  const lines = source.split("\n");
+
+  // 查找高亮状态：跨块连续编号
+  const find =
+    opts.query && opts.query.length > 0
+      ? {
+          query: opts.query,
+          needle: opts.caseSensitive ? opts.query : opts.query.toLowerCase(),
+          caseSensitive: opts.caseSensitive === true,
+          next: 0,
+          current: typeof opts.currentHit === "number" ? opts.currentHit : -1,
+        }
+      : null;
 
   let i = 0;
   let index = 0;
@@ -253,11 +311,24 @@ export function renderBlocks(source: string, opts: RenderOptions = {}): Block[] 
     }
 
     const slice = tokens.slice(start, i);
-    activeMeta = { codes: [], mermaids: [], codeDone: false, applied: false };
+    activeMeta = { codes: [], mermaids: [], codeDone: false, applied: false, hitCount: 0 };
     // 同步逐块渲染：activeMeta 只在本次调用期间有效
-    const html = md.renderer.render(slice, md.options as Required<MarkdownItOptions>, env);
+    let html = md.renderer.render(slice, md.options as Required<MarkdownItOptions>, env);
     const meta = activeMeta;
     activeMeta = null;
+
+    // srcMd：按首个带 map 的 token 行号从原文切片（首 token 通常就有 map）
+    const map = slice.find((t) => t.map)?.map;
+    const srcMd = map
+      ? lines.slice(map[0], Math.min(map[1], lines.length)).join("\n").replace(/\s+$/, "")
+      : "";
+
+    // 查找高亮注入（代码/mermaid 占位先做字节级保护，见 injectFindMarks）
+    if (find) {
+      const r = injectFindMarks(html, find, meta);
+      html = r.html;
+      meta.hitCount = r.hits;
+    }
 
     const kind = classifyBlock(first, slice);
     const textLength = stripHtml(html).length;
@@ -270,6 +341,7 @@ export function renderBlocks(source: string, opts: RenderOptions = {}): Block[] 
       estHeight: estimateHeight(kind, html, slice, textLength),
       textLength,
       revision: 0,
+      srcMd,
       ...(heading ? { heading } : {}),
     };
     blockMeta.set(block, meta);
@@ -277,7 +349,103 @@ export function renderBlocks(source: string, opts: RenderOptions = {}): Block[] 
     index++;
   }
 
+  lastRenderedBlocks = blocks;
   return blocks;
+}
+
+/* -------------------------------------------------------------------------- */
+/* 查找高亮注入（W4a）                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 查找高亮不能碰的容器子树：
+ *  - .mj-code-block / .mj-mermaid 的占位 HTML 会在 enhanceBlockElement 里按原样
+ *    做字符串替换升级，任何字节变化都会让替换失配；
+ *  - .katex 内部同时含视觉层与隐藏的源码层（MathML），会产出幽灵命中。
+ * 这些区域用「占位 token」原样保护：DOM 往返前换成纯文本 token，往返后原样放回。
+ */
+const FIND_SKIP_SELECTOR = ".mj-code-block, .mj-mermaid, .katex";
+
+/** 单次 renderBlocks 调用的查找注入状态（跨块连续编号） */
+interface FindState {
+  query: string;
+  /** 按大小写敏感性归一后的查询词 */
+  needle: string;
+  caseSensitive: boolean;
+  /** 下一个全局命中序号 */
+  next: number;
+  /** 当前命中（-1 = 无） */
+  current: number;
+}
+
+/**
+ * 把块 HTML 里的全部命中包上 `<mark data-hit="N">`（N 为全局序号），
+ * 当前命中额外加 class="current"。
+ * 用 DOMParser 遍历文本节点做字面量匹配（不做正则、不跨行内标签边界合并，
+ * 例如命中跨 `<strong>` 边界时拆成两个命中，属可接受的简化）。
+ */
+function injectFindMarks(html: string, find: FindState, meta: BlockMeta): { html: string; hits: number } {
+  const hitsBefore = find.next;
+  // 1) 代码/mermaid 占位字节级保护：先换成不可见的纯文本 token
+  const guards: { token: string; html: string }[] = [];
+  let guarded = html;
+  meta.codes.forEach((c, i) => {
+    const token = `\u0000${i}\u0000`;
+    guards.push({ token, html: c.placeholder });
+    guarded = guarded.replace(c.placeholder, () => token);
+  });
+  meta.mermaids.forEach((m, i) => {
+    const token = `\u0000${meta.codes.length + i}\u0000`;
+    guards.push({ token, html: m.placeholder });
+    guarded = guarded.replace(m.placeholder, () => token);
+  });
+
+  // 2) DOM 往返 + 文本节点包裹
+  const doc = new DOMParser().parseFromString(guarded, "text/html");
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+    acceptNode(node: Node): number {
+      const parent = node.parentElement;
+      if (!parent || parent.closest(FIND_SKIP_SELECTOR)) return NodeFilter.FILTER_REJECT;
+      const value = node.nodeValue ?? "";
+      const hay = find.caseSensitive ? value : value.toLowerCase();
+      return hay.includes(find.needle) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+    },
+  });
+
+  const targets: Text[] = [];
+  let cur = walker.nextNode();
+  while (cur) {
+    targets.push(cur as Text);
+    cur = walker.nextNode();
+  }
+
+  for (const node of targets) {
+    const value = node.nodeValue ?? "";
+    const hay = find.caseSensitive ? value : value.toLowerCase();
+    const frag = doc.createDocumentFragment();
+    let from = 0;
+    let at = hay.indexOf(find.needle, from);
+    while (at >= 0) {
+      if (at > from) frag.appendChild(doc.createTextNode(value.slice(from, at)));
+      const mark = doc.createElement("mark");
+      mark.setAttribute("data-hit", String(find.next));
+      if (find.next === find.current) mark.className = "current";
+      mark.textContent = value.slice(at, at + find.needle.length);
+      frag.appendChild(mark);
+      find.next++;
+      from = at + find.needle.length;
+      at = hay.indexOf(find.needle, from);
+    }
+    if (from < value.length) frag.appendChild(doc.createTextNode(value.slice(from)));
+    node.replaceWith(frag);
+  }
+
+  // 3) 还原被保护的占位（字节级原样）
+  let out = doc.body.innerHTML;
+  for (const g of guards) {
+    if (out.includes(g.token)) out = out.replace(g.token, () => g.html);
+  }
+  return { html: out, hits: find.next - hitsBefore };
 }
 
 /**
@@ -808,6 +976,60 @@ export async function refreshMermaid(root: HTMLElement): Promise<void> {
 }
 
 /* -------------------------------------------------------------------------- */
+/* 查找辅助与字号缩放（W4a）                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 读取每块的查找命中数（与 renderBlocks 传入的 blocks 一一对应）。
+ * W4b 用它构建「全局命中序号 → 块序号」映射：对 counts 做前缀和，
+ * 命中 h 所在块 = 第一个前缀和 > h 的块。
+ */
+export function getBlockHitCounts(blocks: Block[]): number[] {
+  return blocks.map((b) => blockMeta.get(b)?.hitCount ?? 0);
+}
+
+/**
+ * 就地切换「当前命中」的强色标记（不重渲染）：root 内先摘掉旧 .current，
+ * 再给 data-hit === currentHit 的 mark 加 .current。
+ * 命中所在块未挂载（虚拟滚动外）时不做任何事，W4b 需先滚动到对应块。
+ */
+export function applyCurrentHit(root: HTMLElement, currentHit: number): void {
+  const prev = root.querySelectorAll<HTMLElement>("mark[data-hit].current");
+  for (const el of prev) el.classList.remove("current");
+  const el = root.querySelector<HTMLElement>(`mark[data-hit="${currentHit}"]`);
+  if (el) el.classList.add("current");
+}
+
+/* ------------------------------ 字号缩放 ------------------------------ */
+
+/** 正文字号默认值（markdown.css 的 --reader-font-size 同源） */
+export const READER_FONT_SIZE_DEFAULT = 16;
+/** 正文字号范围（与后端 AppState.font_size 12~32 对齐） */
+export const READER_FONT_SIZE_MIN = 12;
+export const READER_FONT_SIZE_MAX = 32;
+
+/**
+ * 设置正文字号：把 --reader-font-size 写到 root 的内联样式上，
+ * markdown.css 的 .mj-block-inner（正文及以 em 为单位的标题/代码）随之缩放。
+ * 返回夹取后实际生效的值。Ctrl+滚轮/Ctrl+0 监听由 W4b 挂，这里只提供纯助手。
+ */
+export function setReaderFontSize(px: number, root?: HTMLElement | null): number {
+  const target = root ?? (typeof document !== "undefined" ? document.documentElement : null);
+  const v = Math.round(Math.min(READER_FONT_SIZE_MAX, Math.max(READER_FONT_SIZE_MIN, px)));
+  target?.style.setProperty("--reader-font-size", `${v}px`);
+  return v;
+}
+
+/** 读取当前正文字号（优先内联变量，取不到给默认值）；供相对缩放（当前值 ± 步进）用 */
+export function getReaderFontSize(root?: HTMLElement | null): number {
+  const target = root ?? (typeof document !== "undefined" ? document.documentElement : null);
+  if (!target) return READER_FONT_SIZE_DEFAULT;
+  const raw = target.style.getPropertyValue("--reader-font-size").trim();
+  const v = Number.parseFloat(raw);
+  return Number.isFinite(v) && v > 0 ? v : READER_FONT_SIZE_DEFAULT;
+}
+
+/* -------------------------------------------------------------------------- */
 /* 缓存管理                                                                    */
 /* -------------------------------------------------------------------------- */
 
@@ -822,4 +1044,22 @@ export function clearRenderCaches(): void {
 /** 已缓存的高亮块数量（调试/状态栏用） */
 export function highlightedBlockCount(): number {
   return blockHtmlCache.size;
+}
+
+/** 临时调试：查看块的内部增强状态（验证完即删） */
+export function __debugBlock(block: Block): unknown {
+  const meta = blockMeta.get(block);
+  if (!meta) return { noMeta: true };
+  return {
+    codes: meta.codes.map((c) => ({
+      id: c.id, lang: c.lang,
+      placeholderLen: c.placeholder.length,
+      inHtml: block.html.includes(c.placeholder),
+      phStart: c.placeholder.slice(0, 80),
+      htmlStart: block.html.slice(0, 80),
+    })),
+    codeDone: meta.codeDone,
+    applied: meta.applied,
+    hasPending: !!meta.pendingHtml,
+  };
 }

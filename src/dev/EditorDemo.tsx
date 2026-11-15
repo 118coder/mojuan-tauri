@@ -8,7 +8,7 @@
  * 右栏只渲染一小段预览文本 + 一根长比例条，不把 8 万字全塞进 DOM，
  * 避免「演示页自己卡」污染对编辑器流畅度的判断。
  */
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useLayoutEffect, useMemo, useRef, useState } from "preact/hooks";
 import { EditorPane, type EditorSelectionInfo } from "../components/EditorPane";
 import { buildDemoText } from "./demoText";
 import "./dev.css";
@@ -63,7 +63,7 @@ export function EditorDemo() {
   };
 
   // 主题同步到 <html data-theme>，让 theme.css 变量生效
-  useEffect(() => {
+  useLayoutEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
 

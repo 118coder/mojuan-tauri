@@ -18,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(FilesState::default())
         .setup(|app| {
             // 启动后台检查更新：延迟 3 秒，避免和首屏渲染抢资源。

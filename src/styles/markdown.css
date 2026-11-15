@@ -57,7 +57,9 @@
   margin: 0 auto;
   padding: 6px 40px;
   color: var(--text);
-  font-size: 16px;
+  /* 正文字号走 --reader-font-size（W4a 字号缩放：Ctrl+滚轮/Ctrl+0 由 W4b 挂监听，
+     renderer.setReaderFontSize(px) 写变量；标题/表格/代码均以 em 相对缩放） */
+  font-size: var(--reader-font-size, 16px);
   line-height: 1.8;
   word-wrap: break-word;
   overflow-wrap: break-word;
@@ -372,3 +374,20 @@
 
 /* 选中高亮跟随主题 */
 .mj-block-inner ::selection { background: var(--sel-bg); }
+
+/* ------------------------------- 页内查找高亮（W4a） ------------------------------- */
+
+/* 全部命中：弱色常亮。data-hit 是跨块连续的全局命中序号（0 起） */
+.mj-block-inner mark[data-hit] {
+  background: var(--find-hit-bg);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+/* 当前命中：强色（铁律 2.4：全部命中弱色 + 当前强色） */
+.mj-block-inner mark[data-hit].current {
+  background: var(--find-hit-current-bg);
+  color: var(--find-hit-current-fg);
+  outline: 1px solid color-mix(in srgb, var(--find-hit-current-bg) 70%, transparent);
+}
